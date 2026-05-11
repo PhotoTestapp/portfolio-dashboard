@@ -16,6 +16,7 @@ const AUDIT_LOG_VERSION = '2026.05-audit-log-v1'
 const APP_SCHEMA_VERSION = '2026.05-integrity-v1'
 const RISK_WEIGHT_KEY = 'portfolio-dashboard-risk-weight-config-v1'
 const RISK_SCORE_VERSION = '2026.05-risk-weight-v1'
+const IMPORT_VALIDATION_REPORT_KEY = 'portfolio-dashboard-import-validation-report-v1'
 
 const DEFAULT_RISK_WEIGHT_CONFIG = {
   riskScoreVersion: RISK_SCORE_VERSION,
@@ -1254,6 +1255,8 @@ const downloadTextFile = (content, filename, type) => {
   URL.revokeObjectURL(url)
 }
 
+const toCsvText = (rows) => rows.map((row) => row.map((cell) => `\"${String(cell ?? '').replaceAll('\"', '\"\"')}\"`).join(',')).join('\n')
+
 
 const stableStringify = (value) => {
   const seen = new WeakSet()
@@ -2462,6 +2465,14 @@ export default function PortfolioManagementDashboard() {
   })
   const [importMessage, setImportMessage] = useState('')
   const [pendingMissingImport, setPendingMissingImport] = useState(null)
+  const [importValidationReport, setImportValidationReport] = useState(() => {
+    try {
+      const saved = window.localStorage.getItem(IMPORT_VALIDATION_REPORT_KEY)
+      return saved ? JSON.parse(saved) : null
+    } catch {
+      return null
+    }
+  })
   const [decisionHistory, setDecisionHistory] = useState(() => {
     try {
       const saved = window.localStorage.getItem(HISTORY_KEY)
@@ -2532,6 +2543,11 @@ export default function PortfolioManagementDashboard() {
   useEffect(() => {
     window.localStorage.setItem(RISK_WEIGHT_KEY, JSON.stringify(riskWeightConfig))
   }, [riskWeightConfig])
+
+  useEffect(() => {
+    if (importValidationReport) window.localStorage.setItem(IMPORT_VALIDATION_REPORT_KEY, JSON.stringify(importValidationReport))
+    else window.localStorage.removeItem(IMPORT_VALIDATION_REPORT_KEY)
+  }, [importValidationReport])
 
   const stocks = useMemo(() => normalizeStocks({ sections, businessMap, thesisMap, buyMap, sellMap }), [])
   const allGroups = useMemo(() => [...new Set(stocks.map((stock) => stock.group))], [stocks])
@@ -3197,12 +3213,91 @@ export default function PortfolioManagementDashboard() {
     }
   }
 
+  const buildImportValidationReport = (preview) => {
+    const createdAt = new Date().toISOString()
+    const importableRows = preview.rows.filter((row) => row.status === 'IMPORTABLE')
+    const rejectedRows = preview.rows.filter((row) => ['INVALID', 'UNKNOWN_CODE'].includes(row.status))
+    const skippedRows = preview.rows.filter((row) => row.status === 'SKIPPED')
+    const highImpactRows = importableRows.filter((row) => row.impactLevel === 'HIGH')
+    const changedFields = importableRows.reduce((acc, row) => {
+      acc[row.fieldName] = (acc[row.fieldName] || 0) + 1
+      return acc
+    }, {})
+    const affectedStocks = [...new Set(importableRows.filter((row) => row.code && row.code !== 'SYSTEM').map((row) => row.code))]
+    const coverageBefore = coverageDiagnostics.coverageScore
+    const totalFields = coverageDiagnostics.totalFields || 0
+    const filledFieldsBefore = coverageDiagnostics.filledFields || 0
+    const netFilledDelta = importableRows.reduce((sum, row) => {
+      const wasFilled = isFilled(row.previousValue)
+      const isNowFilled = isFilled(row.newValue)
+      if (!wasFilled && isNowFilled) return sum + 1
+      if (wasFilled && !isNowFilled) return sum - 1
+      return sum
+    }, 0)
+    const filledFieldsAfterEstimate = Math.max(0, Math.min(totalFields, filledFieldsBefore + netFilledDelta))
+    const coverageAfterEstimate = totalFields > 0 ? Math.round((filledFieldsAfterEstimate / totalFields) * 100) : coverageBefore
+    const beforeTopRiskScore = riskPriorityRows[0]?.riskPriorityScore || 0
+    const changedRiskRows = importableRows.filter((row) => row.impactLevel === 'HIGH' || ['currentPrice', 'payoutRatio', 'operatingCashFlowYoY', 'epsYoY', 'financialUpdatedAt', 'priceUpdatedAt', 'sourceQuote', 'selectedEvidenceValue'].includes(row.fieldName)).length
+
+    return {
+      reportId: `import-${Date.now()}`,
+      createdAt,
+      appliedRows: importableRows.length,
+      rejectedRows: rejectedRows.length,
+      skippedRows: skippedRows.length,
+      highImpactRows: highImpactRows.length,
+      affectedStockCount: affectedStocks.length,
+      decisionChangedRows: highImpactRows.length,
+      coverageBefore,
+      coverageAfterEstimate,
+      coverageDeltaEstimate: coverageAfterEstimate - coverageBefore,
+      riskScoreBeforeTop: beforeTopRiskScore,
+      riskScoreAfter: 'RECALCULATED_AFTER_APPLY',
+      changedRiskRows,
+      changedFields,
+      rejectedReasons: rejectedRows.reduce((acc, row) => { acc[row.reason] = (acc[row.reason] || 0) + 1; return acc }, {}),
+      rows: preview.rows.map((row) => ({
+        status: row.status,
+        code: row.code,
+        name: row.name,
+        fieldName: row.fieldName,
+        fieldLabel: row.fieldLabel,
+        previousValue: row.previousValue,
+        newValue: row.newValue,
+        decisionBefore: row.decisionBefore,
+        decisionAfter: row.decisionAfter,
+        impactLevel: row.impactLevel,
+        reason: row.reason,
+      })),
+    }
+  }
+
+  const exportImportValidationReportJson = () => {
+    if (!importValidationReport) {
+      setImportMessage('出力できるインポート後検証レポートがありません。')
+      return
+    }
+    downloadTextFile(JSON.stringify(importValidationReport, null, 2), `portfolio-import-validation-report-${importValidationReport.createdAt.slice(0, 10)}.json`, 'application/json;charset=utf-8;')
+  }
+
+  const exportImportValidationReportCsv = () => {
+    if (!importValidationReport) {
+      setImportMessage('出力できるインポート後検証レポートがありません。')
+      return
+    }
+    const header = ['createdAt', 'status', 'code', 'name', 'fieldName', 'fieldLabel', 'previousValue', 'newValue', 'decisionBefore', 'decisionAfter', 'impactLevel', 'reason']
+    const rows = importValidationReport.rows.map((row) => [importValidationReport.createdAt, row.status, row.code, row.name, row.fieldName, row.fieldLabel, row.previousValue, row.newValue, row.decisionBefore, row.decisionAfter, row.impactLevel, row.reason])
+    downloadTextFile(`﻿${toCsvText([header, ...rows])}`, `portfolio-import-validation-report-${importValidationReport.createdAt.slice(0, 10)}.csv`, 'text/csv;charset=utf-8;')
+  }
+
   const applyPendingMissingDataImport = () => {
     if (!pendingMissingImport) return
+    const report = buildImportValidationReport(pendingMissingImport)
     setHoldings(pendingMissingImport.nextHoldings)
     if (pendingMissingImport.fxUpdated) setFxUpdatedAtInput(pendingMissingImport.nextFxUpdatedAt)
     appendAuditEntries(pendingMissingImport.auditEntries)
-    setImportMessage(`不足入力CSV反映完了: ${pendingMissingImport.importableCount}件反映 / HIGH影響 ${pendingMissingImport.highImpactCount}件 / 未登録 ${pendingMissingImport.unknownCount}件 / 不正 ${pendingMissingImport.invalidCount}件 / スキップ ${pendingMissingImport.skippedCount}件`)
+    setImportValidationReport(report)
+    setImportMessage(`不足入力CSV反映完了: ${pendingMissingImport.importableCount}件反映 / HIGH影響 ${pendingMissingImport.highImpactCount}件 / 未登録 ${pendingMissingImport.unknownCount}件 / 不正 ${pendingMissingImport.invalidCount}件 / スキップ ${pendingMissingImport.skippedCount}件。インポート後検証レポートを作成しました。`)
     setPendingMissingImport(null)
   }
 
@@ -4113,12 +4208,36 @@ export default function PortfolioManagementDashboard() {
                   不足入力CSV取込
                   <input type="file" accept=".csv,text/csv" onChange={importMissingDataTemplateCsv} className="hidden" />
                 </label>
+                <button type="button" onClick={exportImportValidationReportCsv} className="rounded-2xl border border-purple-300 bg-purple-50 px-4 py-3 text-sm font-semibold text-purple-700 hover:bg-purple-100">取込検証CSV</button>
+                <button type="button" onClick={exportImportValidationReportJson} className="rounded-2xl border border-purple-300 bg-white px-4 py-3 text-sm font-semibold text-purple-700 hover:bg-purple-50">取込検証JSON</button>
                 <button type="button" onClick={clearAuditLog} className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700 hover:bg-rose-100">監査ログ削除</button>
                 <button type="button" onClick={clearDecisionHistory} className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700 hover:bg-rose-100">履歴削除</button>
                 <button type="button" onClick={clearHoldings} className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700 hover:bg-red-100">入力削除</button>
               </div>
 
               {importMessage && <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm font-semibold text-sky-800">{importMessage}</div>}
+
+              {importValidationReport && (
+                <div className="rounded-3xl border border-purple-200 bg-purple-50 p-5">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                    <div>
+                      <h3 className="text-lg font-bold text-purple-900">インポート後検証レポート</h3>
+                      <p className="mt-1 text-sm text-purple-800">作成日時: {new Date(importValidationReport.createdAt).toLocaleString('ja-JP')}</p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button type="button" onClick={exportImportValidationReportCsv} className="rounded-2xl border border-purple-300 bg-white px-4 py-2 text-xs font-bold text-purple-700 hover:bg-purple-100">CSV出力</button>
+                      <button type="button" onClick={exportImportValidationReportJson} className="rounded-2xl border border-purple-300 bg-white px-4 py-2 text-xs font-bold text-purple-700 hover:bg-purple-100">JSON出力</button>
+                    </div>
+                  </div>
+                  <div className="mt-4 grid gap-3 md:grid-cols-4">
+                    <MetricCard label="反映行" value={importValidationReport.appliedRows} subLabel={`却下 ${importValidationReport.rejectedRows} / スキップ ${importValidationReport.skippedRows}`} tone={importValidationReport.rejectedRows > 0 ? 'amber' : 'emerald'} />
+                    <MetricCard label="HIGH影響" value={importValidationReport.highImpactRows} subLabel={`対象銘柄 ${importValidationReport.affectedStockCount}`} tone={importValidationReport.highImpactRows > 0 ? 'red' : 'emerald'} />
+                    <MetricCard label="カバレッジ推定" value={`${importValidationReport.coverageBefore}% → ${importValidationReport.coverageAfterEstimate}%`} subLabel={`差分 ${importValidationReport.coverageDeltaEstimate >= 0 ? '+' : ''}${importValidationReport.coverageDeltaEstimate}pt`} tone={importValidationReport.coverageDeltaEstimate >= 0 ? 'emerald' : 'red'} />
+                    <MetricCard label="リスク再計算対象" value={importValidationReport.changedRiskRows} subLabel="適用後に再判定" tone={importValidationReport.changedRiskRows > 0 ? 'amber' : 'emerald'} />
+                  </div>
+                  <div className="mt-4 text-xs text-purple-800">変更項目: {Object.entries(importValidationReport.changedFields || {}).map(([key, value]) => `${getCoverageFieldLabel(key)} ${value}件`).join(' / ') || 'なし'}</div>
+                </div>
+              )}
 
               {pendingMissingImport && (
                 <div className="rounded-3xl border border-amber-200 bg-amber-50 p-5">

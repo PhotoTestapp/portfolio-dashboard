@@ -576,3 +576,26 @@ code,missingField
 5. 取り消す場合は `キャンセル`
 
 適用時のみ `holdings` / `fxUpdatedAt` が更新され、`auditLog` に `missing_data_import_preview_apply` として差分が記録されます。
+
+
+## インポート後検証レポート
+
+不足入力CSVをプレビュー適用した後、アプリは `importValidationReport` を作成します。
+
+出力できる内容:
+
+- 反映行数
+- 却下行数
+- スキップ行数
+- HIGH影響変更件数
+- 変更前後の値
+- 判定再計算対象
+- カバレッジ改善見込み
+- リスク再計算対象件数
+
+出力ファイル:
+
+- `portfolio-import-validation-report-YYYY-MM-DD.csv`
+- `portfolio-import-validation-report-YYYY-MM-DD.json`
+
+このレポートはCSV一括反映後に、何が更新され、どこに影響したかを固定するための監査資料です。
