@@ -264,3 +264,32 @@ git add .
 git commit -m "Add decision history snapshots"
 git push
 ```
+
+## 判定履歴の成績評価
+
+この版では、保存済みの判定履歴に対して結果を入力し、判定成績を評価できます。
+
+### 追加項目
+
+- outcomeDate: 結果確認日
+- outcomePrice: 結果確認時の価格
+- outcomeDividend: 判定後に受け取った1株あたり配当
+- outcomeReturn: 価格リターン
+- outcomeTotalReturn: 配当込みリターン
+- decisionAccuracy: SUCCESS / FAILURE / NEUTRAL / MISSED_OPPORTUNITY / NOT_APPLICABLE
+
+### 評価ルール
+
+- BUY: 配当込みリターンがプラスならSUCCESS、0以下ならFAILURE
+- SELL: 配当込みリターンがマイナスならSUCCESS、0以上ならFAILURE
+- REDUCE: 配当込みリターンがマイナスならSUCCESS、0以上ならNEUTRAL
+- HOLD: 配当込みリターンが0以上ならSUCCESS、マイナスならFAILURE
+- WATCH: 配当込みリターンが0以下ならSUCCESS、プラスならMISSED_OPPORTUNITY
+
+### 運用手順
+
+1. 現在判定を履歴保存する
+2. 後日、結果確認日・結果価格・受取配当を入力する
+3. SUCCESS率、FAILURE率、機会損失件数を確認する
+4. 履歴CSVを出力してルール別成績を検証する
+

@@ -731,7 +731,94 @@ const sanitizeDecisionHistory = (items) => {
       inputSnapshot: item.inputSnapshot && typeof item.inputSnapshot === 'object' ? item.inputSnapshot : {},
       portfolioSnapshot: item.portfolioSnapshot && typeof item.portfolioSnapshot === 'object' ? item.portfolioSnapshot : {},
       evidenceSnapshot: item.evidenceSnapshot && typeof item.evidenceSnapshot === 'object' ? item.evidenceSnapshot : {},
+      outcomeDate: String(item.outcomeDate || ''),
+      outcomePrice: item.outcomePrice === '' || item.outcomePrice === undefined || item.outcomePrice === null ? '' : String(item.outcomePrice),
+      outcomeDividend: item.outcomeDividend === '' || item.outcomeDividend === undefined || item.outcomeDividend === null ? '' : String(item.outcomeDividend),
+      outcomeReturn: Number.isFinite(Number(item.outcomeReturn)) ? Number(item.outcomeReturn) : null,
+      outcomeTotalReturn: Number.isFinite(Number(item.outcomeTotalReturn)) ? Number(item.outcomeTotalReturn) : null,
+      decisionAccuracy: String(item.decisionAccuracy || ''),
     }))
+}
+
+const calculateHistoryOutcome = (item) => {
+  const basePrice = toNumber(item?.inputSnapshot?.currentPrice)
+  const outcomePrice = toNumber(item?.outcomePrice)
+  const outcomeDividend = toNumber(item?.outcomeDividend) ?? 0
+  const outcomeDate = String(item?.outcomeDate || '')
+
+  if (!basePrice || basePrice <= 0 || !outcomePrice || outcomePrice <= 0 || !outcomeDate) {
+    return {
+      outcomeReturn: null,
+      outcomeTotalReturn: null,
+      decisionAccuracy: '',
+    }
+  }
+
+  const outcomeReturn = ((outcomePrice - basePrice) / basePrice) * 100
+  const outcomeTotalReturn = ((outcomePrice + outcomeDividend - basePrice) / basePrice) * 100
+  const decision = String(item?.decision || '')
+  let decisionAccuracy = 'NOT_APPLICABLE'
+
+  if (decision === 'BUY') decisionAccuracy = outcomeTotalReturn > 0 ? 'SUCCESS' : 'FAILURE'
+  else if (decision === 'SELL') decisionAccuracy = outcomeTotalReturn < 0 ? 'SUCCESS' : 'FAILURE'
+  else if (decision === 'REDUCE') decisionAccuracy = outcomeTotalReturn < 0 ? 'SUCCESS' : 'NEUTRAL'
+  else if (decision === 'HOLD') decisionAccuracy = outcomeTotalReturn >= 0 ? 'SUCCESS' : 'FAILURE'
+  else if (decision === 'WATCH') decisionAccuracy = outcomeTotalReturn <= 0 ? 'SUCCESS' : 'MISSED_OPPORTUNITY'
+
+  return {
+    outcomeReturn,
+    outcomeTotalReturn,
+    decisionAccuracy,
+  }
+}
+
+const buildOutcomeStats = (decisionHistory) => {
+  const stats = {
+    evaluated: 0,
+    pending: 0,
+    success: 0,
+    failure: 0,
+    missedOpportunity: 0,
+    neutral: 0,
+    byDecision: {},
+    byRuleVersion: {},
+  }
+
+  for (const item of decisionHistory) {
+    const calculated = calculateHistoryOutcome(item)
+    const accuracy = item.decisionAccuracy || calculated.decisionAccuracy
+    const evaluated = Boolean(accuracy)
+    if (!evaluated) {
+      stats.pending += 1
+      continue
+    }
+
+    stats.evaluated += 1
+    if (accuracy === 'SUCCESS') stats.success += 1
+    if (accuracy === 'FAILURE') stats.failure += 1
+    if (accuracy === 'MISSED_OPPORTUNITY') stats.missedOpportunity += 1
+    if (accuracy === 'NEUTRAL') stats.neutral += 1
+
+    const decisionKey = item.decision || 'UNKNOWN'
+    const ruleKey = item.ruleVersion || 'UNKNOWN'
+    stats.byDecision[decisionKey] = stats.byDecision[decisionKey] || { total: 0, success: 0, failure: 0, missedOpportunity: 0, neutral: 0 }
+    stats.byDecision[decisionKey].total += 1
+    if (accuracy === 'SUCCESS') stats.byDecision[decisionKey].success += 1
+    if (accuracy === 'FAILURE') stats.byDecision[decisionKey].failure += 1
+    if (accuracy === 'MISSED_OPPORTUNITY') stats.byDecision[decisionKey].missedOpportunity += 1
+    if (accuracy === 'NEUTRAL') stats.byDecision[decisionKey].neutral += 1
+
+    stats.byRuleVersion[ruleKey] = stats.byRuleVersion[ruleKey] || { total: 0, success: 0, failure: 0, missedOpportunity: 0, neutral: 0 }
+    stats.byRuleVersion[ruleKey].total += 1
+    if (accuracy === 'SUCCESS') stats.byRuleVersion[ruleKey].success += 1
+    if (accuracy === 'FAILURE') stats.byRuleVersion[ruleKey].failure += 1
+    if (accuracy === 'MISSED_OPPORTUNITY') stats.byRuleVersion[ruleKey].missedOpportunity += 1
+    if (accuracy === 'NEUTRAL') stats.byRuleVersion[ruleKey].neutral += 1
+  }
+
+  stats.successRate = stats.evaluated > 0 ? (stats.success / stats.evaluated) * 100 : 0
+  stats.failureRate = stats.evaluated > 0 ? (stats.failure / stats.evaluated) * 100 : 0
+  return stats
 }
 
 const buildHistoryRuns = (decisionHistory) => {
@@ -1835,6 +1922,11 @@ export default function PortfolioManagementDashboard() {
 
   const historyRuns = useMemo(() => buildHistoryRuns(decisionHistory), [decisionHistory])
   const latestHistoryRun = historyRuns[0] || null
+  const outcomeStats = useMemo(() => buildOutcomeStats(decisionHistory), [decisionHistory])
+  const latestHistoryEntries = useMemo(() => {
+    if (!latestHistoryRun) return []
+    return decisionHistory.filter((item) => item.runId === latestHistoryRun.runId).slice(0, 12)
+  }, [decisionHistory, latestHistoryRun])
   const stockDecisionHistoryMap = useMemo(() => {
     const map = new Map()
     for (const item of decisionHistory) {
@@ -2180,6 +2272,7 @@ export default function PortfolioManagementDashboard() {
         pnlJPY: stock.pnlJPY,
         annualDividendJPY: stock.annualDividendJPY,
         dividendYield: stock.dividendYield,
+        currentPrice: stock.currentPrice,
         positionWeight: stock.positionWeight,
         sectorWeight: stock.sectorWeight,
         totalMarketValueJPY: portfolioSummary.totalMarketValueJPY,
@@ -2203,7 +2296,7 @@ export default function PortfolioManagementDashboard() {
   }
 
   const exportDecisionHistoryCsv = () => {
-    const header = ['runId', 'decisionDate', 'code', 'name', 'market', 'group', 'decision', 'severity', 'ruleVersion', 'ruleProfile', 'riskRegime', 'reasons', 'marketValueJPY', 'positionWeight', 'sectorWeight']
+    const header = ['runId', 'decisionDate', 'code', 'name', 'market', 'group', 'decision', 'severity', 'ruleVersion', 'ruleProfile', 'riskRegime', 'reasons', 'basePrice', 'outcomeDate', 'outcomePrice', 'outcomeDividend', 'outcomeReturn', 'outcomeTotalReturn', 'decisionAccuracy', 'marketValueJPY', 'positionWeight', 'sectorWeight']
     const rows = decisionHistory.map((item) => [
       item.runId,
       item.decisionDate,
@@ -2217,6 +2310,13 @@ export default function PortfolioManagementDashboard() {
       item.ruleProfile,
       item.riskRegime,
       safeArray(item.reasons).join(' / '),
+      item.inputSnapshot?.currentPrice ?? item.portfolioSnapshot?.currentPrice ?? '',
+      item.outcomeDate ?? '',
+      item.outcomePrice ?? '',
+      item.outcomeDividend ?? '',
+      item.outcomeReturn ?? '',
+      item.outcomeTotalReturn ?? '',
+      item.decisionAccuracy ?? '',
       item.portfolioSnapshot?.marketValueJPY ?? '',
       item.portfolioSnapshot?.positionWeight ?? '',
       item.portfolioSnapshot?.sectorWeight ?? '',
@@ -2225,6 +2325,20 @@ export default function PortfolioManagementDashboard() {
       .map((row) => row.map((cell) => `"${String(cell ?? '').replaceAll('\"', '\"\"')}"`).join(','))
       .join('\n')
     downloadTextFile(`\uFEFF${csv}`, 'portfolio-decision-history.csv', 'text/csv;charset=utf-8;')
+  }
+
+  const updateDecisionHistoryOutcome = (runId, code, field, value) => {
+    setDecisionHistory((current) => current.map((item) => {
+      if (item.runId !== runId || item.code !== code) return item
+      const next = { ...item, [field]: value }
+      const calculated = calculateHistoryOutcome(next)
+      return {
+        ...next,
+        outcomeReturn: calculated.outcomeReturn,
+        outcomeTotalReturn: calculated.outcomeTotalReturn,
+        decisionAccuracy: calculated.decisionAccuracy,
+      }
+    }))
   }
 
   const clearDecisionHistory = () => {
@@ -2365,6 +2479,10 @@ export default function PortfolioManagementDashboard() {
             <MetricCard label="履歴件数" value={decisionHistory.length} subLabel="銘柄別スナップショット" />
             <MetricCard label="直近SELL" value={latestHistoryRun?.counts?.SELL || 0} subLabel="最新保存回" tone="red" />
             <MetricCard label="直近REDUCE" value={latestHistoryRun?.counts?.REDUCE || 0} subLabel="最新保存回" tone="amber" />
+            <MetricCard label="評価済み履歴" value={outcomeStats.evaluated} subLabel={`SUCCESS率 ${formatPercent(outcomeStats.successRate)}`} tone="emerald" />
+            <MetricCard label="未評価履歴" value={outcomeStats.pending} subLabel="outcome未入力" tone="amber" />
+            <MetricCard label="FAILURE" value={outcomeStats.failure} subLabel={`失敗率 ${formatPercent(outcomeStats.failureRate)}`} tone="red" />
+            <MetricCard label="機会損失" value={outcomeStats.missedOpportunity} subLabel="WATCH後上昇" tone="amber" />
           </div>
 
           <div className="bg-white/80 backdrop-blur-3xl border border-white/60 rounded-[32px] shadow-[0_20px_60px_rgba(15,23,42,0.08)] p-6">
@@ -2393,6 +2511,44 @@ export default function PortfolioManagementDashboard() {
                     </div>
                   </div>
                 ))}
+              </div>
+            )}
+
+            {latestHistoryEntries.length > 0 && (
+              <div className="mt-6 rounded-3xl border border-slate-200 bg-slate-50 p-4">
+                <div className="mb-3">
+                  <h3 className="text-lg font-bold text-slate-900">判定結果の成績評価</h3>
+                  <p className="text-xs font-semibold text-slate-500">直近保存回の最大12件を表示。結果確認日・結果価格・受取配当を入力すると、配当込みリターンと判定成績を自動計算します。</p>
+                </div>
+                <div className="grid gap-3">
+                  {latestHistoryEntries.map((item) => (
+                    <div key={`${item.runId}-${item.code}`} className="rounded-2xl border border-slate-200 bg-white p-4">
+                      <div className="grid gap-3 lg:grid-cols-12 lg:items-end">
+                        <div className="lg:col-span-3">
+                          <div className="font-bold text-slate-900">{item.code} {item.name}</div>
+                          <div className="text-xs font-semibold text-slate-500">判定: {item.decision} / 基準価格: {formatNumber(toNumber(item.inputSnapshot?.currentPrice), 2)}</div>
+                        </div>
+                        <div className="lg:col-span-2">
+                          <label className="text-[11px] font-bold text-slate-500">結果確認日</label>
+                          <input type="date" value={item.outcomeDate || ''} onChange={(event) => updateDecisionHistoryOutcome(item.runId, item.code, 'outcomeDate', event.target.value)} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs outline-none focus:border-sky-400" />
+                        </div>
+                        <div className="lg:col-span-2">
+                          <label className="text-[11px] font-bold text-slate-500">結果価格</label>
+                          <input type="number" value={item.outcomePrice || ''} onChange={(event) => updateDecisionHistoryOutcome(item.runId, item.code, 'outcomePrice', event.target.value)} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs outline-none focus:border-sky-400" />
+                        </div>
+                        <div className="lg:col-span-2">
+                          <label className="text-[11px] font-bold text-slate-500">受取配当</label>
+                          <input type="number" value={item.outcomeDividend || ''} onChange={(event) => updateDecisionHistoryOutcome(item.runId, item.code, 'outcomeDividend', event.target.value)} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs outline-none focus:border-sky-400" />
+                        </div>
+                        <div className="lg:col-span-3 text-xs font-semibold text-slate-700">
+                          <div>価格リターン: {formatPercent(item.outcomeReturn)}</div>
+                          <div>配当込み: {formatPercent(item.outcomeTotalReturn)}</div>
+                          <div className={item.decisionAccuracy === 'SUCCESS' ? 'text-emerald-700' : item.decisionAccuracy === 'FAILURE' ? 'text-red-700' : item.decisionAccuracy === 'MISSED_OPPORTUNITY' ? 'text-amber-700' : 'text-slate-500'}>成績: {item.decisionAccuracy || '未評価'}</div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
           </div>
