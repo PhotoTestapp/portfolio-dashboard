@@ -56,6 +56,7 @@ const holdingFields = [
   'equityRatio',
   'debtToEquity',
   'dividendCut',
+  'ruleProfile',
   'priceUpdatedAt',
   'financialUpdatedAt',
   'sourceName',
@@ -103,6 +104,30 @@ const dataTypeOptions = [
   { value: 'analyst_forecast', label: 'アナリスト予想' },
 ]
 const allowedDataTypes = dataTypeOptions.map((option) => option.value)
+
+const ruleProfileOptions = [
+  { value: 'GENERAL', label: 'GENERAL / 一般事業会社' },
+  { value: 'BANK', label: 'BANK / 銀行' },
+  { value: 'REIT', label: 'REIT / REIT' },
+  { value: 'UTILITY', label: 'UTILITY / 電力・通信・公益' },
+  { value: 'CYCLICAL', label: 'CYCLICAL / 景気敏感' },
+  { value: 'GROWTH_TECH', label: 'GROWTH_TECH / 成長IT' },
+  { value: 'HEALTHCARE', label: 'HEALTHCARE / 医薬・ヘルスケア' },
+  { value: 'FINANCIAL', label: 'FINANCIAL / 証券・リース・金融' },
+]
+const allowedRuleProfiles = ruleProfileOptions.map((option) => option.value)
+
+const inferRuleProfile = (stock) => {
+  const text = `${stock.code} ${stock.name} ${stock.market} ${stock.group} ${stock.business} ${(stock.tags || []).join(' ')}`
+  if (stock.code === 'O' || text.includes('REIT')) return 'REIT'
+  if (text.includes('銀行') || ['8304', '8410', '8713'].includes(stock.code)) return 'BANK'
+  if (text.includes('証券') || text.includes('リース') || text.includes('金融持株') || ['8473', '8593', '8614', '8616'].includes(stock.code)) return 'FINANCIAL'
+  if (text.includes('電力') || text.includes('公益') || text.includes('通信') || ['9432', '9436', '9503', '9513', 'DUK', 'ES', 'NEE', 'T', 'VZ'].includes(stock.code)) return 'UTILITY'
+  if (text.includes('医薬') || text.includes('医療') || text.includes('ワクチン') || text.includes('ヘルスケア') || ['ABBV', 'JNJ', '4502', '4503', '4539', '8086'].includes(stock.code)) return 'HEALTHCARE'
+  if (text.includes('鉄鋼') || text.includes('海運') || text.includes('自動車') || text.includes('航空') || text.includes('建設機械') || ['5401', '5406', '5408', '5411', '9104', '9110', '9202', 'DAL', 'F'].includes(stock.code)) return 'CYCLICAL'
+  if (text.includes('AI') || text.includes('クラウド') || text.includes('半導体') || ['MSFT', 'GOOGL', 'AVGO', 'AMZN', 'ADBE', 'ORCL', 'TYL'].includes(stock.code)) return 'GROWTH_TECH'
+  return 'GENERAL'
+}
 
 const todayInputDate = () => new Date().toISOString().slice(0, 10)
 
@@ -633,6 +658,157 @@ const getStaleDataReasons = (stock) => {
   return [...new Set(reasons)]
 }
 
+
+const getSellReasonsByProfile = (stock) => {
+  const profile = stock.ruleProfile || 'GENERAL'
+  const reasons = []
+  if (stock.dividendCut === true) reasons.push('減配あり')
+
+  switch (profile) {
+    case 'BANK':
+      if (stock.payoutRatio >= 100) reasons.push('BANK: 配当性向100%以上')
+      if (stock.epsYoY <= -40) reasons.push('BANK: EPS前年比-40%以下')
+      break
+    case 'REIT':
+      // REITは通常株と利益・分配金の構造が異なるため、配当性向100%以上・EPS単独悪化は即SELLにしない。
+      break
+    case 'UTILITY':
+      if (stock.operatingCashFlowYoY <= -40) reasons.push('UTILITY: 営業CF前年比-40%以下')
+      break
+    case 'CYCLICAL':
+      if (stock.operatingCashFlowYoY <= -30) reasons.push('CYCLICAL: 営業CF前年比-30%以下')
+      break
+    case 'GROWTH_TECH':
+      if (stock.operatingCashFlowYoY <= -40) reasons.push('GROWTH_TECH: 営業CF前年比-40%以下')
+      if (stock.revenueYoY <= -20) reasons.push('GROWTH_TECH: 売上前年比-20%以下')
+      break
+    case 'HEALTHCARE':
+      if (stock.operatingCashFlowYoY <= -30) reasons.push('HEALTHCARE: 営業CF前年比-30%以下')
+      break
+    case 'FINANCIAL':
+      if (stock.payoutRatio >= 100) reasons.push('FINANCIAL: 配当性向100%以上')
+      if (stock.epsYoY <= -40) reasons.push('FINANCIAL: EPS前年比-40%以下')
+      break
+    default:
+      if (stock.payoutRatio >= 100) reasons.push('GENERAL: 配当性向100%以上')
+      if (stock.operatingCashFlowYoY <= -30) reasons.push('GENERAL: 営業CF前年比-30%以下')
+      if (stock.epsYoY <= -30) reasons.push('GENERAL: EPS前年比-30%以下')
+      if (stock.equityRatio < 20) reasons.push('GENERAL: 自己資本比率20%未満')
+      if (stock.debtToEquity >= 5) reasons.push('GENERAL: 有利子負債倍率5倍以上')
+  }
+  return reasons
+}
+
+const getReduceReasonsByProfile = (stock) => {
+  const profile = stock.ruleProfile || 'GENERAL'
+  const reasons = []
+  if (stock.positionWeight >= 8) reasons.push('個別銘柄比率8%以上')
+  if (stock.sectorWeight >= 25) reasons.push('同一セクター比率25%以上')
+  if (stock.hasPosition && stock.unrealizedGainRate !== null && stock.unrealizedGainRate <= -20) reasons.push('含み損-20%以下')
+
+  switch (profile) {
+    case 'BANK':
+      if (stock.payoutRatio >= 85) reasons.push('BANK: 配当性向85%以上')
+      if (stock.epsYoY <= -25) reasons.push('BANK: EPS前年比-25%以下')
+      break
+    case 'REIT':
+      if (stock.payoutRatio >= 120) reasons.push('REIT: 分配金余力確認が必要（配当性向120%以上）')
+      break
+    case 'UTILITY':
+      if (stock.operatingCashFlowYoY <= -25) reasons.push('UTILITY: 営業CF前年比-25%以下')
+      break
+    case 'CYCLICAL':
+      if (stock.operatingCashFlowYoY <= -15) reasons.push('CYCLICAL: 営業CF前年比-15%以下')
+      break
+    case 'GROWTH_TECH':
+      if (stock.revenueYoY < 5) reasons.push('GROWTH_TECH: 売上前年比5%未満')
+      if (stock.operatingCashFlowYoY < 0) reasons.push('GROWTH_TECH: 営業CF前年比0%未満')
+      break
+    case 'HEALTHCARE':
+      if (stock.revenueYoY <= -10) reasons.push('HEALTHCARE: 売上前年比-10%以下')
+      if (stock.operatingCashFlowYoY <= -20) reasons.push('HEALTHCARE: 営業CF前年比-20%以下')
+      break
+    case 'FINANCIAL':
+      if (stock.payoutRatio >= 85) reasons.push('FINANCIAL: 配当性向85%以上')
+      if (stock.epsYoY <= -25) reasons.push('FINANCIAL: EPS前年比-25%以下')
+      break
+    default:
+      if (stock.payoutRatio >= 80) reasons.push('GENERAL: 配当性向80%以上')
+      if (stock.operatingCashFlowYoY <= -15) reasons.push('GENERAL: 営業CF前年比-15%以下')
+  }
+  return reasons
+}
+
+const getBuyChecksByProfile = (stock) => {
+  const profile = stock.ruleProfile || 'GENERAL'
+  const common = [
+    { passed: stock.positionWeight < 5, reason: '個別銘柄比率5%未満' },
+    { passed: stock.sectorWeight < 20, reason: '同一セクター比率20%未満' },
+    { passed: stock.dividendCut === false, reason: '減配なし' },
+  ]
+
+  switch (profile) {
+    case 'BANK':
+      return [
+        { passed: stock.payoutRatio < 75, reason: 'BANK: 配当性向75%未満' },
+        { passed: stock.epsYoY >= 0, reason: 'BANK: EPS前年比0%以上' },
+        { passed: stock.dividendYield >= 3, reason: 'BANK: 配当利回り3%以上' },
+        ...common,
+      ]
+    case 'REIT':
+      return [
+        { passed: stock.dividendYield >= 4, reason: 'REIT: 分配金利回り4%以上' },
+        { passed: stock.positionWeight < 5, reason: '個別銘柄比率5%未満' },
+        { passed: stock.sectorWeight < 20, reason: '同一セクター比率20%未満' },
+        { passed: stock.dividendCut === false, reason: '分配金減額なし' },
+      ]
+    case 'UTILITY':
+      return [
+        { passed: stock.operatingCashFlowYoY >= -10, reason: 'UTILITY: 営業CF前年比-10%以上' },
+        { passed: stock.dividendYield >= 3, reason: 'UTILITY: 配当利回り3%以上' },
+        ...common,
+      ]
+    case 'CYCLICAL':
+      return [
+        { passed: stock.operatingCashFlowYoY >= 0, reason: 'CYCLICAL: 営業CF前年比0%以上' },
+        { passed: stock.payoutRatio < 70, reason: 'CYCLICAL: 配当性向70%未満' },
+        ...common,
+      ]
+    case 'GROWTH_TECH':
+      return [
+        { passed: stock.revenueYoY >= 5, reason: 'GROWTH_TECH: 売上前年比5%以上' },
+        { passed: stock.epsYoY >= 0, reason: 'GROWTH_TECH: EPS前年比0%以上' },
+        { passed: stock.operatingCashFlowYoY >= 0, reason: 'GROWTH_TECH: 営業CF前年比0%以上' },
+        { passed: stock.positionWeight < 5, reason: '個別銘柄比率5%未満' },
+        { passed: stock.sectorWeight < 20, reason: '同一セクター比率20%未満' },
+      ]
+    case 'HEALTHCARE':
+      return [
+        { passed: stock.operatingCashFlowYoY >= 0, reason: 'HEALTHCARE: 営業CF前年比0%以上' },
+        { passed: stock.revenueYoY >= -5, reason: 'HEALTHCARE: 売上前年比-5%以上' },
+        { passed: stock.payoutRatio < 80, reason: 'HEALTHCARE: 配当性向80%未満' },
+        ...common,
+      ]
+    case 'FINANCIAL':
+      return [
+        { passed: stock.payoutRatio < 75, reason: 'FINANCIAL: 配当性向75%未満' },
+        { passed: stock.epsYoY >= 0, reason: 'FINANCIAL: EPS前年比0%以上' },
+        { passed: stock.dividendYield >= 3, reason: 'FINANCIAL: 配当利回り3%以上' },
+        ...common,
+      ]
+    default:
+      return [
+        { passed: stock.payoutRatio < 70, reason: 'GENERAL: 配当性向70%未満' },
+        { passed: stock.operatingCashFlowYoY >= 0, reason: 'GENERAL: 営業CF前年比0%以上' },
+        { passed: stock.epsYoY >= 0, reason: 'GENERAL: EPS前年比0%以上' },
+        { passed: stock.equityRatio >= 30, reason: 'GENERAL: 自己資本比率30%以上' },
+        { passed: stock.debtToEquity < 3, reason: 'GENERAL: 有利子負債倍率3倍未満' },
+        { passed: stock.dividendYield >= 3, reason: 'GENERAL: 配当利回り3%以上' },
+        ...common,
+      ]
+  }
+}
+
 const judgeStock = (stock) => {
   if (stock.validationErrors?.length > 0) {
     return {
@@ -692,53 +868,34 @@ const judgeStock = (stock) => {
     }
   }
 
-  const sellReasons = []
-  if (stock.dividendCut === true) sellReasons.push('減配あり')
-  if (stock.payoutRatio >= 100) sellReasons.push('配当性向100%以上')
-  if (stock.operatingCashFlowYoY <= -30) sellReasons.push('営業CF前年比-30%以下')
-  if (stock.epsYoY <= -30) sellReasons.push('EPS前年比-30%以下')
-  if (stock.equityRatio < 20) sellReasons.push('自己資本比率20%未満')
-  if (stock.debtToEquity >= 5) sellReasons.push('有利子負債倍率5倍以上')
+  const profile = stock.ruleProfile || 'GENERAL'
+  const sellReasons = getSellReasonsByProfile(stock)
 
   if (sellReasons.length > 0) {
-    return { decision: 'SELL', severity: 'CRITICAL', reasons: sellReasons }
+    return { decision: 'SELL', severity: 'CRITICAL', reasons: [`判定プロファイル: ${profile}`, ...sellReasons] }
   }
 
-  const reduceReasons = []
-  if (stock.positionWeight >= 8) reduceReasons.push('個別銘柄比率8%以上')
-  if (stock.sectorWeight >= 25) reduceReasons.push('同一セクター比率25%以上')
-  if (stock.payoutRatio >= 80) reduceReasons.push('配当性向80%以上')
-  if (stock.operatingCashFlowYoY <= -15) reduceReasons.push('営業CF前年比-15%以下')
-  if (stock.hasPosition && stock.unrealizedGainRate !== null && stock.unrealizedGainRate <= -20) reduceReasons.push('含み損-20%以下')
+  const reduceReasons = getReduceReasonsByProfile(stock)
 
   if (reduceReasons.length > 0) {
-    return { decision: 'REDUCE', severity: 'HIGH', reasons: reduceReasons }
+    return { decision: 'REDUCE', severity: 'HIGH', reasons: [`判定プロファイル: ${profile}`, ...reduceReasons] }
   }
 
-  const buyChecks = [
-    { passed: stock.payoutRatio < 70, reason: '配当性向70%未満' },
-    { passed: stock.operatingCashFlowYoY >= 0, reason: '営業CF前年比0%以上' },
-    { passed: stock.epsYoY >= 0, reason: 'EPS前年比0%以上' },
-    { passed: stock.equityRatio >= 30, reason: '自己資本比率30%以上' },
-    { passed: stock.debtToEquity < 3, reason: '有利子負債倍率3倍未満' },
-    { passed: stock.dividendYield >= 3, reason: '配当利回り3%以上' },
-    { passed: stock.positionWeight < 5, reason: '個別銘柄比率5%未満' },
-    { passed: stock.sectorWeight < 20, reason: '同一セクター比率20%未満' },
-    { passed: stock.dividendCut === false, reason: '減配なし' },
-  ]
+  const buyChecks = getBuyChecksByProfile(stock)
 
   if (buyChecks.every((check) => check.passed)) {
     return {
       decision: 'BUY',
       severity: 'LOW',
-      reasons: buyChecks.map((check) => check.reason),
+      reasons: [`判定プロファイル: ${profile}`, ...buyChecks.map((check) => check.reason)],
     }
   }
 
+  const failedBuyChecks = buyChecks.filter((check) => !check.passed).map((check) => check.reason)
   return {
     decision: stock.hasPosition ? 'HOLD' : 'WATCH',
     severity: 'MEDIUM',
-    reasons: ['売却・削減条件には該当しないが、買い条件をすべて満たしていない'],
+    reasons: [`判定プロファイル: ${profile}`, '売却・削減条件には該当しないが、買い条件をすべて満たしていない', ...failedBuyChecks.slice(0, 3)],
   }
 }
 
@@ -868,6 +1025,22 @@ function DataTypeSelectCell({ label, value, onChange, error = '' }) {
   )
 }
 
+
+function RuleProfileSelectCell({ label, value, onChange }) {
+  return (
+    <label className="block">
+      <span className="mb-1 block text-[11px] font-semibold text-slate-500">{label}</span>
+      <select
+        value={value ?? ''}
+        onChange={(event) => onChange(event.target.value)}
+        className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-900 outline-none transition focus:border-sky-400 focus:ring-4 focus:ring-sky-100"
+      >
+        {ruleProfileOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+      </select>
+    </label>
+  )
+}
+
 function DecisionBadge({ result }) {
   return (
     <span className={`px-3 py-1 rounded-full border text-[11px] font-bold ${decisionTone[result.decision]}`}>
@@ -915,6 +1088,8 @@ function StockCard({ stock, holding, onHoldingChange }) {
         )}
       </div>
 
+      <div className="mt-3 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-800">判定プロファイル: {stock.ruleProfile}（未指定時は業務内容・分類から自動付与）</div>
+
       <div className="mt-4 grid grid-cols-2 gap-2 md:grid-cols-4">
         <InputCell label="保有数" value={holding.shares} onChange={(value) => updateField('shares', value)} placeholder="例: 100" error={fieldErrors.shares} />
         <InputCell label={`取得単価(${stock.currency})`} value={holding.averagePrice} onChange={(value) => updateField('averagePrice', value)} placeholder="例: 3200" error={fieldErrors.averagePrice} />
@@ -929,10 +1104,11 @@ function StockCard({ stock, holding, onHoldingChange }) {
         <SelectCell label="減配" value={holding.dividendCut} onChange={(value) => updateField('dividendCut', value)} error={fieldErrors.dividendCut} />
       </div>
 
-      <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-3">
+      <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4">
         <InputCell label="売上前年比(%)" value={holding.revenueYoY} onChange={(value) => updateField('revenueYoY', value)} placeholder="例: 3" signed error={fieldErrors.revenueYoY} />
         <InputCell label="自己資本比率(%)" value={holding.equityRatio} onChange={(value) => updateField('equityRatio', value)} placeholder="例: 45" error={fieldErrors.equityRatio} />
         <InputCell label="有利子負債倍率(倍)" value={holding.debtToEquity} onChange={(value) => updateField('debtToEquity', value)} placeholder="例: 1.8" error={fieldErrors.debtToEquity} />
+        <RuleProfileSelectCell label="判定プロファイル" value={holding.ruleProfile || stock.ruleProfile} onChange={(value) => updateField('ruleProfile', value)} />
       </div>
 
       <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-2">
@@ -1141,6 +1317,8 @@ export default function PortfolioManagementDashboard() {
       const equityRatio = toNumber(holding.equityRatio)
       const debtToEquity = toNumber(holding.debtToEquity)
       const dividendCut = toBooleanOrNull(holding.dividendCut)
+      const fallbackRuleProfile = inferRuleProfile(stock)
+      const ruleProfile = allowedRuleProfiles.includes(holding.ruleProfile) ? holding.ruleProfile : fallbackRuleProfile
       const priceUpdatedAt = holding.priceUpdatedAt || ''
       const financialUpdatedAt = holding.financialUpdatedAt || ''
       const fxUpdatedAt = fxUpdatedAtInput || ''
@@ -1174,6 +1352,7 @@ export default function PortfolioManagementDashboard() {
         equityRatio,
         debtToEquity,
         dividendCut,
+        ruleProfile,
         priceUpdatedAt,
         financialUpdatedAt,
         fxUpdatedAt,
@@ -1309,6 +1488,9 @@ export default function PortfolioManagementDashboard() {
 
     const byMarket = buildDistribution('market')
     const byCurrency = buildDistribution('currency')
+    const byRuleProfile = [...new Set(enrichedStocks.map((stock) => stock.ruleProfile || 'GENERAL'))]
+      .map((label) => ({ label, count: enrichedStocks.filter((stock) => (stock.ruleProfile || 'GENERAL') === label).length }))
+      .sort((a, b) => b.count - a.count)
     const topPositions = enrichedStocks
       .filter((stock) => stock.marketValueJPY)
       .map((stock) => ({ ...stock, ratio: totalMarketValueJPY > 0 ? (stock.marketValueJPY / totalMarketValueJPY) * 100 : 0 }))
@@ -1350,6 +1532,7 @@ export default function PortfolioManagementDashboard() {
       byGroup,
       byMarket,
       byCurrency,
+      byRuleProfile,
       topPositions,
       largestGroup,
       negativePositions,
@@ -1441,6 +1624,7 @@ export default function PortfolioManagementDashboard() {
           equityRatio: getCsvValue(row, ['equityRatio', '自己資本比率']),
           debtToEquity: getCsvValue(row, ['debtToEquity', '有利子負債倍率']),
           dividendCut: getCsvValue(row, ['dividendCut', '減配']),
+          ruleProfile: getCsvValue(row, ['ruleProfile', '判定プロファイル']),
           priceUpdatedAt: getCsvValue(row, ['priceUpdatedAt', '価格更新日']),
           financialUpdatedAt: getCsvValue(row, ['financialUpdatedAt', '財務更新日']),
           sourceName: getCsvValue(row, ['sourceName', 'データ取得元', '取得元名']),
@@ -1484,7 +1668,7 @@ export default function PortfolioManagementDashboard() {
     const header = [
       'code', 'name', 'market', 'group', 'currency',
       'shares', 'averagePrice', 'currentPrice', 'annualDividend',
-      'payoutRatio', 'operatingCashFlowYoY', 'revenueYoY', 'epsYoY', 'equityRatio', 'debtToEquity', 'dividendCut',
+      'payoutRatio', 'operatingCashFlowYoY', 'revenueYoY', 'epsYoY', 'equityRatio', 'debtToEquity', 'dividendCut', 'ruleProfile',
       'priceUpdatedAt', 'financialUpdatedAt', 'fxUpdatedAt',
       'sourceName', 'sourceUrl', 'fiscalPeriod', 'dataType', 'confirmedAt',
       'sourcePage', 'sourceQuote', 'selectedEvidenceValue', 'sourceMetricName', 'sourceUnit', 'evidenceMemo',
@@ -1509,6 +1693,7 @@ export default function PortfolioManagementDashboard() {
       stock.holding.equityRatio || '',
       stock.holding.debtToEquity || '',
       stock.holding.dividendCut || '',
+      stock.ruleProfile || '',
       stock.holding.priceUpdatedAt || '',
       stock.holding.financialUpdatedAt || '',
       stock.fxUpdatedAt || '',
@@ -1555,7 +1740,7 @@ export default function PortfolioManagementDashboard() {
   const exportJson = () => {
     const backup = {
       app: 'portfolio-dashboard',
-      version: 8,
+      version: 9,
       exportedAt: new Date().toISOString(),
       usdJpy: usdJpyInput,
       fxUpdatedAt: fxUpdatedAtInput,
@@ -1570,6 +1755,7 @@ export default function PortfolioManagementDashboard() {
         weakEvidence: ['根拠ページ未入力', '引用文・該当数値なし', '引用に数値なし', '参照指標名なし', '単位なし'],
         multipleEvidenceValues: ['引用文に複数数値がある場合は採用証跡値が必須', '採用証跡値が引用文内数値と一致しない場合は判定停止'],
         mismatchedEvidence: ['採用証跡値と入力値の不一致', '許容差超過'],
+        ruleProfiles: ruleProfileOptions.map((option) => option.value),
       },
     }
     downloadTextFile(JSON.stringify(backup, null, 2), 'portfolio-dashboard-backup.json', 'application/json;charset=utf-8;')
@@ -1615,6 +1801,7 @@ export default function PortfolioManagementDashboard() {
           equityRatio: holding?.equityRatio,
           debtToEquity: holding?.debtToEquity,
           dividendCut: holding?.dividendCut,
+          ruleProfile: holding?.ruleProfile,
           priceUpdatedAt: holding?.priceUpdatedAt,
           financialUpdatedAt: holding?.financialUpdatedAt,
           sourceName: holding?.sourceName,
@@ -1772,6 +1959,9 @@ export default function PortfolioManagementDashboard() {
             <MetricCard label="HOLD" value={portfolioSummary.decisionCounts.HOLD || 0} subLabel="保有継続" tone="sky" />
             <MetricCard label="WATCH" value={portfolioSummary.decisionCounts.WATCH || 0} subLabel="監視" />
             <MetricCard label="NO_DATA" value={portfolioSummary.decisionCounts.NO_DATA || 0} subLabel="データ不足" tone="amber" />
+            {portfolioSummary.byRuleProfile?.slice(0, 8).map((item) => (
+              <MetricCard key={item.label} label={item.label} value={item.count} subLabel="ルールプロファイル" />
+            ))}
           </div>
 
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -1846,7 +2036,7 @@ export default function PortfolioManagementDashboard() {
                 </div>
               </div>
               <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm font-semibold text-slate-700">
-                入力できるのは数値・事実のみ。判定優先順位は INVALID_DATA → UNVERIFIED_DATA → WEAK_EVIDENCE → MULTIPLE_EVIDENCE_VALUES → MISMATCHED_EVIDENCE → STALE_DATA → NO_DATA → SELL → REDUCE → BUY → HOLD → WATCH。異常値がある場合は売買判定を停止し、人間による上書きは不可。
+                入力できるのは数値・事実のみ。判定優先順位は INVALID_DATA → UNVERIFIED_DATA → WEAK_EVIDENCE → MULTIPLE_EVIDENCE_VALUES → MISMATCHED_EVIDENCE → STALE_DATA → NO_DATA → SELL → REDUCE → BUY → HOLD → WATCH。SELL/REDUCE/BUYは判定プロファイル別に分岐し、人間による上書きは不可。
               </div>
             </div>
 
