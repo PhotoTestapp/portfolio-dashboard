@@ -6,8 +6,10 @@ const marketOrder = ['日本株', '米国株']
 const STORAGE_KEY = 'portfolio-dashboard-holdings-v1'
 const SETTINGS_KEY = 'portfolio-dashboard-settings-v1'
 const HISTORY_KEY = 'portfolio-dashboard-decision-history-v1'
+const AUDIT_KEY = 'portfolio-dashboard-audit-log-v1'
 const DEFAULT_USD_JPY = 155
 const DECISION_HISTORY_VERSION = '2026.05-decision-action-v1'
+const AUDIT_LOG_VERSION = '2026.05-audit-log-v1'
 
 const decisionLabels = {
   INVALID_DATA: 'INVALID_DATA',
@@ -696,6 +698,85 @@ const checkEvidenceMatch = (stock) => {
     extractedNumbers,
   }
 }
+
+
+const auditImpactFields = new Set([
+  'shares', 'averagePrice', 'currentPrice', 'annualDividend', 'payoutRatio', 'operatingCashFlowYoY', 'revenueYoY', 'epsYoY', 'equityRatio', 'debtToEquity', 'dividendCut', 'ruleProfile',
+  'bankCapitalRatio', 'bankNplRatio', 'bankCreditCostRatio', 'bankNetInterestMargin', 'reitLtv', 'reitOccupancyRate', 'reitNavRatio', 'reitFfoYoY', 'utilityCapexToSales', 'utilityFuelCostYoY', 'cyclicalMarketIndexYoY', 'inventoryYoY', 'capacityUtilization', 'growthFcfYoY', 'operatingMargin', 'rdToSales', 'pipelineProgress', 'financialAumYoY', 'financialCreditCostRatio',
+  'priceUpdatedAt', 'financialUpdatedAt', 'fxUpdatedAt', 'sourceUrl', 'sourceQuote', 'selectedEvidenceValue', 'sourceMetricName', 'sourceUnit', 'outcomePrice', 'outcomeDividend', 'actionPrice', 'actionShares', 'actionDate', 'ruleVersion', 'riskRegime'
+])
+
+const getAuditImpactLevel = (fieldName, previousValue, newValue, decisionBefore = '', decisionAfter = '') => {
+  if (String(decisionBefore || '') && String(decisionAfter || '') && String(decisionBefore) !== String(decisionAfter)) return 'HIGH'
+  if (auditImpactFields.has(fieldName)) return 'HIGH'
+  if (String(previousValue ?? '') !== String(newValue ?? '')) return 'MEDIUM'
+  return 'LOW'
+}
+
+const sanitizeAuditLog = (items) => {
+  if (!Array.isArray(items)) return []
+  return items
+    .filter((item) => item && typeof item === 'object' && item.changedAt && item.fieldName)
+    .map((item) => ({
+      id: String(item.id || `${item.changedAt}-${item.code || 'SYSTEM'}-${item.fieldName}`),
+      changedAt: String(item.changedAt || ''),
+      code: String(item.code || 'SYSTEM'),
+      name: String(item.name || ''),
+      fieldName: String(item.fieldName || ''),
+      previousValue: item.previousValue === undefined || item.previousValue === null ? '' : String(item.previousValue),
+      newValue: item.newValue === undefined || item.newValue === null ? '' : String(item.newValue),
+      changeSource: String(item.changeSource || 'manual'),
+      decisionBefore: String(item.decisionBefore || ''),
+      decisionAfter: String(item.decisionAfter || ''),
+      ruleVersion: String(item.ruleVersion || DECISION_HISTORY_VERSION),
+      impactLevel: String(item.impactLevel || getAuditImpactLevel(String(item.fieldName || ''), item.previousValue, item.newValue, item.decisionBefore, item.decisionAfter)),
+    }))
+}
+
+const buildAuditStats = (auditLog) => {
+  const now = Date.now()
+  const stats = {
+    total: auditLog.length,
+    last24h: 0,
+    high: 0,
+    medium: 0,
+    low: 0,
+    csvImport: 0,
+    jsonRestore: 0,
+    manual: 0,
+    ruleConfig: 0,
+    decisionChanged: 0,
+  }
+
+  for (const item of auditLog) {
+    const changedAt = new Date(item.changedAt).getTime()
+    if (Number.isFinite(changedAt) && now - changedAt <= 86400000) stats.last24h += 1
+    if (item.impactLevel === 'HIGH') stats.high += 1
+    else if (item.impactLevel === 'MEDIUM') stats.medium += 1
+    else stats.low += 1
+    if (item.changeSource === 'csv_import') stats.csvImport += 1
+    else if (item.changeSource === 'json_restore') stats.jsonRestore += 1
+    else if (item.changeSource === 'rule_config') stats.ruleConfig += 1
+    else if (item.changeSource === 'manual') stats.manual += 1
+    if (item.decisionBefore && item.decisionAfter && item.decisionBefore !== item.decisionAfter) stats.decisionChanged += 1
+  }
+  return stats
+}
+
+const buildAuditEntry = ({ code = 'SYSTEM', name = '', fieldName, previousValue = '', newValue = '', changeSource = 'manual', decisionBefore = '', decisionAfter = '', ruleVersion = DECISION_HISTORY_VERSION }) => ({
+  id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  changedAt: new Date().toISOString(),
+  code,
+  name,
+  fieldName,
+  previousValue: previousValue === undefined || previousValue === null ? '' : String(previousValue),
+  newValue: newValue === undefined || newValue === null ? '' : String(newValue),
+  changeSource,
+  decisionBefore,
+  decisionAfter,
+  ruleVersion,
+  impactLevel: getAuditImpactLevel(fieldName, previousValue, newValue, decisionBefore, decisionAfter),
+})
 
 const downloadTextFile = (content, filename, type) => {
   const blob = new Blob([content], { type })
@@ -1447,10 +1528,11 @@ function StockCard({ stock, holding, onHoldingChange, decisionHistory = [] }) {
   const fieldErrors = { ...(stock.validationFieldErrors || {}), ...(stock.verificationFieldErrors || {}), ...(stock.evidenceFieldErrors || {}) }
 
   const updateField = (field, value) => {
+    const previousValue = holding[field] ?? ''
     onHoldingChange(stock.code, {
       ...holding,
       [field]: value,
-    })
+    }, { fieldName: field, previousValue, newValue: value, changeSource: 'manual' })
   }
 
   return (
@@ -1686,8 +1768,12 @@ export default function PortfolioManagementDashboard() {
   })
   const usdJpyInput = settings.usdJpy ?? String(DEFAULT_USD_JPY)
   const fxUpdatedAtInput = settings.fxUpdatedAt ?? ''
-  const setUsdJpyInput = (value) => setSettings((current) => ({ ...current, usdJpy: value }))
-  const setFxUpdatedAtInput = (value) => setSettings((current) => ({ ...current, fxUpdatedAt: value }))
+  const setUsdJpyInput = (value) => {
+    setSettings((current) => ({ ...current, usdJpy: value }))
+  }
+  const setFxUpdatedAtInput = (value) => {
+    setSettings((current) => ({ ...current, fxUpdatedAt: value }))
+  }
   const [holdings, setHoldings] = useState(() => {
     try {
       const saved = window.localStorage.getItem(STORAGE_KEY)
@@ -1705,6 +1791,14 @@ export default function PortfolioManagementDashboard() {
       return []
     }
   })
+  const [auditLog, setAuditLog] = useState(() => {
+    try {
+      const saved = window.localStorage.getItem(AUDIT_KEY)
+      return saved ? sanitizeAuditLog(JSON.parse(saved)) : []
+    } catch {
+      return []
+    }
+  })
 
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(holdings))
@@ -1717,6 +1811,10 @@ export default function PortfolioManagementDashboard() {
   useEffect(() => {
     window.localStorage.setItem(HISTORY_KEY, JSON.stringify(decisionHistory))
   }, [decisionHistory])
+
+  useEffect(() => {
+    window.localStorage.setItem(AUDIT_KEY, JSON.stringify(auditLog))
+  }, [auditLog])
 
   const stocks = useMemo(() => normalizeStocks({ sections, businessMap, thesisMap, buyMap, sellMap }), [])
   const allGroups = useMemo(() => [...new Set(stocks.map((stock) => stock.group))], [stocks])
@@ -2041,14 +2139,37 @@ export default function PortfolioManagementDashboard() {
     }
     return map
   }, [decisionHistory])
+  const stockByCode = useMemo(() => new Map(enrichedStocks.map((stock) => [stock.code, stock])), [enrichedStocks])
+  const auditStats = useMemo(() => buildAuditStats(auditLog), [auditLog])
+
+  const appendAuditEntries = (entries) => {
+    const normalized = sanitizeAuditLog(Array.isArray(entries) ? entries : [entries])
+    if (normalized.length === 0) return
+    setAuditLog((current) => [...normalized, ...current].slice(0, 20000))
+  }
 
   const totalCount = filteredStocks.length
   const jpCount = filteredStocks.filter((stock) => stock.market === '日本株').length
   const usCount = filteredStocks.filter((stock) => stock.market === '米国株').length
   const missingCount = Math.max(ACTUAL_HOLDING_COUNT - stocks.length, 0)
 
-  const onHoldingChange = (code, holding) => {
+  const onHoldingChange = (code, holding, meta = {}) => {
+    const stock = stockByCode.get(code)
+    const previous = holdings[code] || {}
     setHoldings((current) => ({ ...current, [code]: holding }))
+    if (meta.fieldName && String(meta.previousValue ?? previous[meta.fieldName] ?? '') !== String(meta.newValue ?? holding[meta.fieldName] ?? '')) {
+      appendAuditEntries(buildAuditEntry({
+        code,
+        name: stock?.name || '',
+        fieldName: meta.fieldName,
+        previousValue: meta.previousValue ?? previous[meta.fieldName] ?? '',
+        newValue: meta.newValue ?? holding[meta.fieldName] ?? '',
+        changeSource: meta.changeSource || 'manual',
+        decisionBefore: stock?.decisionResult?.decision || '',
+        decisionAfter: 'RECALCULATED_AFTER_CHANGE',
+        ruleVersion: DECISION_HISTORY_VERSION,
+      }))
+    }
   }
 
   const toggleCondition = (condition) => {
@@ -2139,7 +2260,20 @@ export default function PortfolioManagementDashboard() {
         importedCount += 1
       }
 
+      const auditEntries = []
+      for (const [code, nextHolding] of Object.entries(nextHoldings)) {
+        const previousHolding = holdings[code] || {}
+        const stock = stockByCode.get(code)
+        for (const fieldName of holdingFields) {
+          const previousValue = previousHolding[fieldName] ?? ''
+          const newValue = nextHolding[fieldName] ?? ''
+          if (String(previousValue) !== String(newValue)) {
+            auditEntries.push(buildAuditEntry({ code, name: stock?.name || '', fieldName, previousValue, newValue, changeSource: 'csv_import', decisionBefore: stock?.decisionResult?.decision || '', decisionAfter: 'RECALCULATED_AFTER_CHANGE' }))
+          }
+        }
+      }
       setHoldings(nextHoldings)
+      appendAuditEntries(auditEntries)
       setImportMessage(`CSV取込完了: ${importedCount}件反映 / 未登録コード ${unknownCount}件 / 数値不正 ${invalidCount}件`)
     } catch (error) {
       setImportMessage(`CSV取込失敗: ${error instanceof Error ? error.message : 'ファイルを読み込めませんでした'}`)
@@ -2248,6 +2382,8 @@ export default function PortfolioManagementDashboard() {
       fxUpdatedAt: fxUpdatedAtInput,
       holdings,
       decisionHistory,
+      auditLog,
+      auditLogVersion: AUDIT_LOG_VERSION,
       rules: {
         sell: ['減配あり', '配当性向100%以上', '営業CF前年比-30%以下', 'EPS前年比-30%以下', '自己資本比率20%未満', '有利子負債倍率5倍以上'],
         reduce: ['個別銘柄比率8%以上', '同一セクター比率25%以上', '配当性向80%以上', '営業CF前年比-15%以下', '含み損-20%以下'],
@@ -2261,6 +2397,7 @@ export default function PortfolioManagementDashboard() {
         ruleProfiles: ruleProfileOptions.map((option) => option.value),
         decisionHistoryVersion: DECISION_HISTORY_VERSION,
         decisionHistory: ['判定日時', '入力値スナップショット', 'ポートフォリオ比率', '証跡スナップショットを保存'],
+        auditLog: ['変更日時', '銘柄', '項目', '変更前', '変更後', '変更元', '判定変化', '影響度'],
       },
     }
     downloadTextFile(JSON.stringify(backup, null, 2), 'portfolio-dashboard-backup.json', 'application/json;charset=utf-8;')
@@ -2334,7 +2471,23 @@ export default function PortfolioManagementDashboard() {
         }
       }
 
+      const auditEntries = []
+      for (const [code, nextHolding] of Object.entries(nextHoldings)) {
+        const previousHolding = holdings[code] || {}
+        const stock = stockByCode.get(code)
+        for (const fieldName of holdingFields) {
+          const previousValue = previousHolding[fieldName] ?? ''
+          const newValue = nextHolding[fieldName] ?? ''
+          if (String(previousValue) !== String(newValue)) {
+            auditEntries.push(buildAuditEntry({ code, name: stock?.name || '', fieldName, previousValue, newValue, changeSource: 'json_restore', decisionBefore: stock?.decisionResult?.decision || '', decisionAfter: 'RECALCULATED_AFTER_CHANGE' }))
+          }
+        }
+      }
       setHoldings(nextHoldings)
+      appendAuditEntries(auditEntries)
+      if (Array.isArray(parsed.auditLog)) {
+        setAuditLog((current) => [...auditEntries, ...sanitizeAuditLog(parsed.auditLog), ...current].slice(0, 20000))
+      }
       if (parsed.usdJpy !== undefined && validateNumericValue('usdJpy', parsed.usdJpy, usdJpyRule) === null) {
         setUsdJpyInput(String(parsed.usdJpy))
       }
@@ -2441,10 +2594,15 @@ export default function PortfolioManagementDashboard() {
   }
 
   const updateDecisionHistoryOutcome = (runId, code, field, value) => {
+    let auditEntry = null
     setDecisionHistory((current) => current.map((item) => {
       if (item.runId !== runId || item.code !== code) return item
+      const previousValue = item[field] ?? ''
       const next = { ...item, [field]: value }
       const calculated = calculateHistoryOutcome(next)
+      if (String(previousValue) !== String(value ?? '')) {
+        auditEntry = buildAuditEntry({ code: item.code, name: item.name, fieldName: field, previousValue, newValue: value, changeSource: 'manual', decisionBefore: item.decision, decisionAfter: item.decision, ruleVersion: item.ruleVersion })
+      }
       return {
         ...next,
         outcomeReturn: calculated.outcomeReturn,
@@ -2452,13 +2610,20 @@ export default function PortfolioManagementDashboard() {
         decisionAccuracy: calculated.decisionAccuracy,
       }
     }))
+    if (auditEntry) appendAuditEntries(auditEntry)
   }
 
   const updateDecisionHistoryAction = (runId, code, field, value) => {
+    let auditEntry = null
     setDecisionHistory((current) => current.map((item) => {
       if (item.runId !== runId || item.code !== code) return item
-      const next = { ...item, [field]: field === 'actionTaken' ? value === true || value === 'true' : value }
+      const previousValue = item[field] ?? ''
+      const normalizedValue = field === 'actionTaken' ? value === true || value === 'true' : value
+      const next = { ...item, [field]: normalizedValue }
       const calculated = calculateHistoryAction(next)
+      if (String(previousValue) !== String(normalizedValue ?? '')) {
+        auditEntry = buildAuditEntry({ code: item.code, name: item.name, fieldName: field, previousValue, newValue: normalizedValue, changeSource: 'manual', decisionBefore: item.decision, decisionAfter: item.decision, ruleVersion: item.ruleVersion })
+      }
       return {
         ...next,
         actionAmount: calculated.actionAmount,
@@ -2467,6 +2632,21 @@ export default function PortfolioManagementDashboard() {
         complianceStatus: calculated.complianceStatus,
       }
     }))
+    if (auditEntry) appendAuditEntries(auditEntry)
+  }
+
+  const exportAuditLogCsv = () => {
+    const header = ['changedAt', 'code', 'name', 'fieldName', 'previousValue', 'newValue', 'changeSource', 'decisionBefore', 'decisionAfter', 'impactLevel', 'ruleVersion']
+    const rows = auditLog.map((item) => [item.changedAt, item.code, item.name, item.fieldName, item.previousValue, item.newValue, item.changeSource, item.decisionBefore, item.decisionAfter, item.impactLevel, item.ruleVersion])
+    const csv = [header, ...rows].map((row) => row.map((cell) => `\"${String(cell ?? '').replaceAll('\"', '\"\"')}\"`).join(',')).join('\n')
+    downloadTextFile(`\uFEFF${csv}`, 'portfolio-audit-log.csv', 'text/csv;charset=utf-8;')
+  }
+
+  const clearAuditLog = () => {
+    if (window.confirm('監査ログをすべて削除します。実行しますか？')) {
+      setAuditLog([])
+      setImportMessage('監査ログを削除しました。')
+    }
   }
 
   const clearDecisionHistory = () => {
@@ -2478,7 +2658,12 @@ export default function PortfolioManagementDashboard() {
 
   const clearHoldings = () => {
     if (window.confirm('入力した保有データをすべて削除します。実行しますか？')) {
+      const entries = Object.entries(holdings).flatMap(([code, holding]) => {
+        const stock = stockByCode.get(code)
+        return Object.entries(holding || {}).filter(([, value]) => String(value ?? '') !== '').map(([fieldName, value]) => buildAuditEntry({ code, name: stock?.name || '', fieldName, previousValue: value, newValue: '', changeSource: 'manual', decisionBefore: stock?.decisionResult?.decision || '', decisionAfter: 'CLEARED' }))
+      })
       setHoldings({})
+      appendAuditEntries(entries)
     }
   }
 
@@ -2556,6 +2741,8 @@ export default function PortfolioManagementDashboard() {
                 </label>
                 <button type="button" onClick={saveDecisionHistorySnapshot} className="rounded-2xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700 hover:bg-emerald-100">現在判定を履歴保存</button>
                 <button type="button" onClick={exportDecisionHistoryCsv} className="rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50">履歴CSV出力</button>
+                <button type="button" onClick={exportAuditLogCsv} className="rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50">監査ログCSV出力</button>
+                <button type="button" onClick={clearAuditLog} className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700 hover:bg-rose-100">監査ログ削除</button>
                 <button type="button" onClick={clearDecisionHistory} className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700 hover:bg-rose-100">履歴削除</button>
                 <button type="button" onClick={clearHoldings} className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700 hover:bg-red-100">入力削除</button>
               </div>
@@ -2615,6 +2802,9 @@ export default function PortfolioManagementDashboard() {
             <MetricCard label="未実行" value={actionStats.notExecuted} subLabel={`BUY ${actionStats.buyNotExecuted} / SELL ${actionStats.sellNotExecuted} / REDUCE ${actionStats.reduceNotExecuted}`} tone="amber" />
             <MetricCard label="逆行実行" value={actionStats.contradicted} subLabel={`非遵守 ${actionStats.nonCompliant}件`} tone="red" />
             <MetricCard label="平均実行遅延" value={`${formatNumber(actionStats.averageExecutionGapDays, 1)}日`} subLabel={`平均価格乖離 ${formatPercent(actionStats.averageExecutionPriceGap)}`} tone="sky" />
+            <MetricCard label="監査ログ" value={auditStats.total} subLabel={`24時間 ${auditStats.last24h}件`} tone="sky" />
+            <MetricCard label="HIGH影響変更" value={auditStats.high} subLabel={`判定変化 ${auditStats.decisionChanged}件`} tone="red" />
+            <MetricCard label="CSV/JSON変更" value={auditStats.csvImport + auditStats.jsonRestore} subLabel={`CSV ${auditStats.csvImport} / JSON ${auditStats.jsonRestore}`} tone="amber" />
           </div>
 
           <div className="bg-white/80 backdrop-blur-3xl border border-white/60 rounded-[32px] shadow-[0_20px_60px_rgba(15,23,42,0.08)] p-6">
@@ -2910,6 +3100,50 @@ export default function PortfolioManagementDashboard() {
           </div>
 
           {groupedSections.length === 0 && <div className="bg-white border border-slate-200 rounded-3xl p-8 text-slate-500">該当銘柄なし</div>}
+
+          <div className="bg-white/80 backdrop-blur-3xl border border-white/60 rounded-[32px] shadow-[0_20px_60px_rgba(15,23,42,0.08)] p-6">
+            <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+              <div>
+                <h2 className="text-2xl font-bold text-slate-900">入力イベント監査ログ</h2>
+                <p className="text-xs font-semibold text-slate-500">誰がではなく、いつ・どの値を・何から何へ・どの経路で変更したかを保存。localStorageとJSONに保持。</p>
+              </div>
+              <div className="text-xs font-bold text-slate-500">上限: 20,000件</div>
+            </div>
+            {auditLog.length === 0 ? (
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm font-semibold text-slate-600">監査ログなし。手入力、CSV取込、JSON復元、履歴のaction/outcome入力で自動記録します。</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-left text-xs">
+                  <thead className="text-slate-500">
+                    <tr>
+                      <th className="px-3 py-2">変更日時</th>
+                      <th className="px-3 py-2">銘柄</th>
+                      <th className="px-3 py-2">項目</th>
+                      <th className="px-3 py-2">変更前</th>
+                      <th className="px-3 py-2">変更後</th>
+                      <th className="px-3 py-2">変更元</th>
+                      <th className="px-3 py-2">判定変化</th>
+                      <th className="px-3 py-2">影響</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {auditLog.slice(0, 20).map((item) => (
+                      <tr key={item.id} className="align-top">
+                        <td className="px-3 py-2 whitespace-nowrap font-semibold text-slate-700">{String(item.changedAt).slice(0, 19).replace('T', ' ')}</td>
+                        <td className="px-3 py-2 whitespace-nowrap text-slate-700">{item.code === 'SYSTEM' ? 'SYSTEM' : `${item.code} ${item.name}`}</td>
+                        <td className="px-3 py-2 whitespace-nowrap font-bold text-slate-800">{item.fieldName}</td>
+                        <td className="px-3 py-2 max-w-[180px] truncate text-slate-500">{item.previousValue}</td>
+                        <td className="px-3 py-2 max-w-[180px] truncate text-slate-800">{item.newValue}</td>
+                        <td className="px-3 py-2 whitespace-nowrap text-slate-600">{item.changeSource}</td>
+                        <td className="px-3 py-2 whitespace-nowrap text-slate-600">{item.decisionBefore || '-'} → {item.decisionAfter || '-'}</td>
+                        <td className={`px-3 py-2 whitespace-nowrap font-bold ${item.impactLevel === 'HIGH' ? 'text-red-700' : item.impactLevel === 'MEDIUM' ? 'text-amber-700' : 'text-slate-500'}`}>{item.impactLevel}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
 
           {groupedSections.map((section) => (
             <div key={section.title} className="mb-10">

@@ -328,3 +328,30 @@ git add .
 git commit -m "Add decision action tracking"
 git push
 ```
+
+## 追加機能: 入力イベント監査ログ
+
+この版では `auditLog` を追加し、以下の変更を localStorage / JSON / CSV で追跡します。
+
+- 手入力による銘柄データ変更
+- CSV取込による一括変更
+- JSON復元による上書き
+- 判定履歴の action / outcome 入力変更
+- 入力削除によるクリア変更
+
+監査ログには以下を保存します。
+
+| 項目 | 内容 |
+|---|---|
+| changedAt | 変更日時 |
+| code / name | 対象銘柄 |
+| fieldName | 変更項目 |
+| previousValue | 変更前 |
+| newValue | 変更後 |
+| changeSource | manual / csv_import / json_restore / rule_config |
+| decisionBefore | 変更前判定 |
+| decisionAfter | 変更後判定または再計算予定 |
+| impactLevel | HIGH / MEDIUM / LOW |
+| ruleVersion | 変更時点のルール版 |
+
+監査ログは最大20,000件まで保持します。
