@@ -7,7 +7,7 @@ const STORAGE_KEY = 'portfolio-dashboard-holdings-v1'
 const SETTINGS_KEY = 'portfolio-dashboard-settings-v1'
 const HISTORY_KEY = 'portfolio-dashboard-decision-history-v1'
 const DEFAULT_USD_JPY = 155
-const DECISION_HISTORY_VERSION = '2026.05-decision-history-v1'
+const DECISION_HISTORY_VERSION = '2026.05-decision-action-v1'
 
 const decisionLabels = {
   INVALID_DATA: 'INVALID_DATA',
@@ -737,6 +737,16 @@ const sanitizeDecisionHistory = (items) => {
       outcomeReturn: Number.isFinite(Number(item.outcomeReturn)) ? Number(item.outcomeReturn) : null,
       outcomeTotalReturn: Number.isFinite(Number(item.outcomeTotalReturn)) ? Number(item.outcomeTotalReturn) : null,
       decisionAccuracy: String(item.decisionAccuracy || ''),
+      actionTaken: item.actionTaken === true || item.actionTaken === 'true',
+      actionType: String(item.actionType || ''),
+      actionDate: String(item.actionDate || ''),
+      actionPrice: item.actionPrice === '' || item.actionPrice === undefined || item.actionPrice === null ? '' : String(item.actionPrice),
+      actionShares: item.actionShares === '' || item.actionShares === undefined || item.actionShares === null ? '' : String(item.actionShares),
+      actionAmount: Number.isFinite(Number(item.actionAmount)) ? Number(item.actionAmount) : null,
+      actionReason: String(item.actionReason || ''),
+      executionGapDays: Number.isFinite(Number(item.executionGapDays)) ? Number(item.executionGapDays) : null,
+      executionPriceGap: Number.isFinite(Number(item.executionPriceGap)) ? Number(item.executionPriceGap) : null,
+      complianceStatus: String(item.complianceStatus || ''),
     }))
 }
 
@@ -770,6 +780,98 @@ const calculateHistoryOutcome = (item) => {
     outcomeTotalReturn,
     decisionAccuracy,
   }
+}
+
+
+const normalizeActionType = (value) => String(value || '').trim().toUpperCase()
+
+const calculateHistoryAction = (item) => {
+  const decision = String(item?.decision || '')
+  const actionType = normalizeActionType(item?.actionType)
+  const actionTaken = item?.actionTaken === true || item?.actionTaken === 'true'
+  const basePrice = toNumber(item?.inputSnapshot?.currentPrice)
+  const actionPrice = toNumber(item?.actionPrice)
+  const actionShares = toNumber(item?.actionShares)
+  const decisionDate = item?.decisionDate ? new Date(item.decisionDate) : null
+  const actionDate = item?.actionDate ? new Date(item.actionDate) : null
+
+  let complianceStatus = 'NOT_APPLICABLE'
+
+  if (!actionTaken || !actionType || actionType === 'NONE') {
+    if (decision === 'BUY' || decision === 'SELL' || decision === 'REDUCE') complianceStatus = 'NOT_EXECUTED'
+    else if (decision === 'HOLD' || decision === 'WATCH') complianceStatus = 'COMPLIANT'
+  } else if (decision === 'BUY' && actionType === 'BUY') complianceStatus = 'COMPLIANT'
+  else if (decision === 'SELL' && actionType === 'SELL') complianceStatus = 'COMPLIANT'
+  else if (decision === 'REDUCE' && (actionType === 'SELL' || actionType === 'REDUCE')) complianceStatus = 'COMPLIANT'
+  else if (decision === 'HOLD' && (actionType === 'HOLD' || actionType === 'NONE')) complianceStatus = 'COMPLIANT'
+  else if (decision === 'WATCH' && (actionType === 'NONE' || actionType === 'HOLD')) complianceStatus = 'COMPLIANT'
+  else if ((decision === 'BUY' && actionType === 'SELL') || (decision === 'SELL' && actionType === 'BUY')) complianceStatus = 'CONTRADICTED'
+  else complianceStatus = 'NON_COMPLIANT'
+
+  const actionAmount = actionPrice && actionShares ? actionPrice * actionShares : null
+  const executionPriceGap = basePrice && actionPrice ? ((actionPrice - basePrice) / basePrice) * 100 : null
+  let executionGapDays = null
+  if (decisionDate instanceof Date && !Number.isNaN(decisionDate.getTime()) && actionDate instanceof Date && !Number.isNaN(actionDate.getTime())) {
+    executionGapDays = Math.round((actionDate.getTime() - decisionDate.getTime()) / 86400000)
+  }
+
+  return {
+    actionAmount,
+    executionGapDays,
+    executionPriceGap,
+    complianceStatus,
+  }
+}
+
+const buildActionStats = (decisionHistory) => {
+  const stats = {
+    total: decisionHistory.length,
+    compliant: 0,
+    notExecuted: 0,
+    contradicted: 0,
+    nonCompliant: 0,
+    notApplicable: 0,
+    buyNotExecuted: 0,
+    sellNotExecuted: 0,
+    reduceNotExecuted: 0,
+    executed: 0,
+    gapTotal: 0,
+    gapCount: 0,
+    priceGapTotal: 0,
+    priceGapCount: 0,
+  }
+
+  for (const item of decisionHistory) {
+    const calculated = calculateHistoryAction(item)
+    const status = item.complianceStatus || calculated.complianceStatus
+    if (item.actionTaken === true || item.actionTaken === 'true') stats.executed += 1
+    if (status === 'COMPLIANT') stats.compliant += 1
+    else if (status === 'NOT_EXECUTED') stats.notExecuted += 1
+    else if (status === 'CONTRADICTED') stats.contradicted += 1
+    else if (status === 'NON_COMPLIANT') stats.nonCompliant += 1
+    else stats.notApplicable += 1
+
+    if (status === 'NOT_EXECUTED' && item.decision === 'BUY') stats.buyNotExecuted += 1
+    if (status === 'NOT_EXECUTED' && item.decision === 'SELL') stats.sellNotExecuted += 1
+    if (status === 'NOT_EXECUTED' && item.decision === 'REDUCE') stats.reduceNotExecuted += 1
+
+    const gapDays = Number.isFinite(Number(item.executionGapDays)) ? Number(item.executionGapDays) : calculated.executionGapDays
+    if (Number.isFinite(gapDays)) {
+      stats.gapTotal += gapDays
+      stats.gapCount += 1
+    }
+    const priceGap = Number.isFinite(Number(item.executionPriceGap)) ? Number(item.executionPriceGap) : calculated.executionPriceGap
+    if (Number.isFinite(priceGap)) {
+      stats.priceGapTotal += priceGap
+      stats.priceGapCount += 1
+    }
+  }
+
+  stats.complianceRate = stats.total > 0 ? (stats.compliant / stats.total) * 100 : 0
+  stats.executionRate = stats.total > 0 ? (stats.executed / stats.total) * 100 : 0
+  stats.averageExecutionGapDays = stats.gapCount > 0 ? stats.gapTotal / stats.gapCount : 0
+  stats.averageExecutionPriceGap = stats.priceGapCount > 0 ? stats.priceGapTotal / stats.priceGapCount : 0
+  return stats
 }
 
 const buildOutcomeStats = (decisionHistory) => {
@@ -1923,6 +2025,7 @@ export default function PortfolioManagementDashboard() {
   const historyRuns = useMemo(() => buildHistoryRuns(decisionHistory), [decisionHistory])
   const latestHistoryRun = historyRuns[0] || null
   const outcomeStats = useMemo(() => buildOutcomeStats(decisionHistory), [decisionHistory])
+  const actionStats = useMemo(() => buildActionStats(decisionHistory), [decisionHistory])
   const latestHistoryEntries = useMemo(() => {
     if (!latestHistoryRun) return []
     return decisionHistory.filter((item) => item.runId === latestHistoryRun.runId).slice(0, 12)
@@ -2296,7 +2399,7 @@ export default function PortfolioManagementDashboard() {
   }
 
   const exportDecisionHistoryCsv = () => {
-    const header = ['runId', 'decisionDate', 'code', 'name', 'market', 'group', 'decision', 'severity', 'ruleVersion', 'ruleProfile', 'riskRegime', 'reasons', 'basePrice', 'outcomeDate', 'outcomePrice', 'outcomeDividend', 'outcomeReturn', 'outcomeTotalReturn', 'decisionAccuracy', 'marketValueJPY', 'positionWeight', 'sectorWeight']
+    const header = ['runId', 'decisionDate', 'code', 'name', 'market', 'group', 'decision', 'severity', 'ruleVersion', 'ruleProfile', 'riskRegime', 'reasons', 'basePrice', 'actionTaken', 'actionType', 'actionDate', 'actionPrice', 'actionShares', 'actionAmount', 'actionReason', 'executionGapDays', 'executionPriceGap', 'complianceStatus', 'outcomeDate', 'outcomePrice', 'outcomeDividend', 'outcomeReturn', 'outcomeTotalReturn', 'decisionAccuracy', 'marketValueJPY', 'positionWeight', 'sectorWeight']
     const rows = decisionHistory.map((item) => [
       item.runId,
       item.decisionDate,
@@ -2311,6 +2414,16 @@ export default function PortfolioManagementDashboard() {
       item.riskRegime,
       safeArray(item.reasons).join(' / '),
       item.inputSnapshot?.currentPrice ?? item.portfolioSnapshot?.currentPrice ?? '',
+      item.actionTaken ? 'true' : 'false',
+      item.actionType ?? '',
+      item.actionDate ?? '',
+      item.actionPrice ?? '',
+      item.actionShares ?? '',
+      item.actionAmount ?? '',
+      item.actionReason ?? '',
+      item.executionGapDays ?? '',
+      item.executionPriceGap ?? '',
+      item.complianceStatus ?? '',
       item.outcomeDate ?? '',
       item.outcomePrice ?? '',
       item.outcomeDividend ?? '',
@@ -2337,6 +2450,21 @@ export default function PortfolioManagementDashboard() {
         outcomeReturn: calculated.outcomeReturn,
         outcomeTotalReturn: calculated.outcomeTotalReturn,
         decisionAccuracy: calculated.decisionAccuracy,
+      }
+    }))
+  }
+
+  const updateDecisionHistoryAction = (runId, code, field, value) => {
+    setDecisionHistory((current) => current.map((item) => {
+      if (item.runId !== runId || item.code !== code) return item
+      const next = { ...item, [field]: field === 'actionTaken' ? value === true || value === 'true' : value }
+      const calculated = calculateHistoryAction(next)
+      return {
+        ...next,
+        actionAmount: calculated.actionAmount,
+        executionGapDays: calculated.executionGapDays,
+        executionPriceGap: calculated.executionPriceGap,
+        complianceStatus: calculated.complianceStatus,
       }
     }))
   }
@@ -2483,6 +2611,10 @@ export default function PortfolioManagementDashboard() {
             <MetricCard label="未評価履歴" value={outcomeStats.pending} subLabel="outcome未入力" tone="amber" />
             <MetricCard label="FAILURE" value={outcomeStats.failure} subLabel={`失敗率 ${formatPercent(outcomeStats.failureRate)}`} tone="red" />
             <MetricCard label="機会損失" value={outcomeStats.missedOpportunity} subLabel="WATCH後上昇" tone="amber" />
+            <MetricCard label="判定遵守率" value={formatPercent(actionStats.complianceRate)} subLabel={`COMPLIANT ${actionStats.compliant}件`} tone="emerald" />
+            <MetricCard label="未実行" value={actionStats.notExecuted} subLabel={`BUY ${actionStats.buyNotExecuted} / SELL ${actionStats.sellNotExecuted} / REDUCE ${actionStats.reduceNotExecuted}`} tone="amber" />
+            <MetricCard label="逆行実行" value={actionStats.contradicted} subLabel={`非遵守 ${actionStats.nonCompliant}件`} tone="red" />
+            <MetricCard label="平均実行遅延" value={`${formatNumber(actionStats.averageExecutionGapDays, 1)}日`} subLabel={`平均価格乖離 ${formatPercent(actionStats.averageExecutionPriceGap)}`} tone="sky" />
           </div>
 
           <div className="bg-white/80 backdrop-blur-3xl border border-white/60 rounded-[32px] shadow-[0_20px_60px_rgba(15,23,42,0.08)] p-6">
@@ -2518,7 +2650,7 @@ export default function PortfolioManagementDashboard() {
               <div className="mt-6 rounded-3xl border border-slate-200 bg-slate-50 p-4">
                 <div className="mb-3">
                   <h3 className="text-lg font-bold text-slate-900">判定結果の成績評価</h3>
-                  <p className="text-xs font-semibold text-slate-500">直近保存回の最大12件を表示。結果確認日・結果価格・受取配当を入力すると、配当込みリターンと判定成績を自動計算します。</p>
+                  <p className="text-xs font-semibold text-slate-500">直近保存回の最大12件を表示。実行記録と結果を分離管理。実行有無・約定価格・株数で遵守状況を計算し、結果価格・配当で判定成績を計算します。</p>
                 </div>
                 <div className="grid gap-3">
                   {latestHistoryEntries.map((item) => (
@@ -2527,6 +2659,45 @@ export default function PortfolioManagementDashboard() {
                         <div className="lg:col-span-3">
                           <div className="font-bold text-slate-900">{item.code} {item.name}</div>
                           <div className="text-xs font-semibold text-slate-500">判定: {item.decision} / 基準価格: {formatNumber(toNumber(item.inputSnapshot?.currentPrice), 2)}</div>
+                        </div>
+                        <div className="lg:col-span-2">
+                          <label className="text-[11px] font-bold text-slate-500">実行有無</label>
+                          <select value={item.actionTaken ? 'true' : 'false'} onChange={(event) => updateDecisionHistoryAction(item.runId, item.code, 'actionTaken', event.target.value)} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs outline-none focus:border-sky-400">
+                            <option value="false">未実行</option>
+                            <option value="true">実行済み</option>
+                          </select>
+                        </div>
+                        <div className="lg:col-span-2">
+                          <label className="text-[11px] font-bold text-slate-500">実行種別</label>
+                          <select value={item.actionType || ''} onChange={(event) => updateDecisionHistoryAction(item.runId, item.code, 'actionType', event.target.value)} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs outline-none focus:border-sky-400">
+                            <option value="">未選択</option>
+                            <option value="NONE">NONE</option>
+                            <option value="BUY">BUY</option>
+                            <option value="SELL">SELL</option>
+                            <option value="REDUCE">REDUCE</option>
+                            <option value="HOLD">HOLD</option>
+                          </select>
+                        </div>
+                        <div className="lg:col-span-2">
+                          <label className="text-[11px] font-bold text-slate-500">実行日</label>
+                          <input type="date" value={item.actionDate || ''} onChange={(event) => updateDecisionHistoryAction(item.runId, item.code, 'actionDate', event.target.value)} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs outline-none focus:border-sky-400" />
+                        </div>
+                        <div className="lg:col-span-2">
+                          <label className="text-[11px] font-bold text-slate-500">実行価格</label>
+                          <input type="number" value={item.actionPrice || ''} onChange={(event) => updateDecisionHistoryAction(item.runId, item.code, 'actionPrice', event.target.value)} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs outline-none focus:border-sky-400" />
+                        </div>
+                        <div className="lg:col-span-2">
+                          <label className="text-[11px] font-bold text-slate-500">実行株数</label>
+                          <input type="number" value={item.actionShares || ''} onChange={(event) => updateDecisionHistoryAction(item.runId, item.code, 'actionShares', event.target.value)} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs outline-none focus:border-sky-400" />
+                        </div>
+                        <div className="lg:col-span-2 text-xs font-semibold text-slate-700">
+                          <div>遵守: <span className={item.complianceStatus === 'COMPLIANT' ? 'text-emerald-700' : item.complianceStatus === 'CONTRADICTED' ? 'text-red-700' : item.complianceStatus === 'NOT_EXECUTED' ? 'text-amber-700' : 'text-slate-500'}>{item.complianceStatus || '未計算'}</span></div>
+                          <div>遅延: {item.executionGapDays ?? '-'}日</div>
+                          <div>価格乖離: {formatPercent(item.executionPriceGap)}</div>
+                        </div>
+                        <div className="lg:col-span-4">
+                          <label className="text-[11px] font-bold text-slate-500">実行理由・未実行理由</label>
+                          <input value={item.actionReason || ''} onChange={(event) => updateDecisionHistoryAction(item.runId, item.code, 'actionReason', event.target.value)} placeholder="資金不足、約定待ち、判定に従い実行など" className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs outline-none focus:border-sky-400" />
                         </div>
                         <div className="lg:col-span-2">
                           <label className="text-[11px] font-bold text-slate-500">結果確認日</label>
@@ -2540,9 +2711,10 @@ export default function PortfolioManagementDashboard() {
                           <label className="text-[11px] font-bold text-slate-500">受取配当</label>
                           <input type="number" value={item.outcomeDividend || ''} onChange={(event) => updateDecisionHistoryOutcome(item.runId, item.code, 'outcomeDividend', event.target.value)} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs outline-none focus:border-sky-400" />
                         </div>
-                        <div className="lg:col-span-3 text-xs font-semibold text-slate-700">
+                        <div className="lg:col-span-4 text-xs font-semibold text-slate-700">
                           <div>価格リターン: {formatPercent(item.outcomeReturn)}</div>
                           <div>配当込み: {formatPercent(item.outcomeTotalReturn)}</div>
+                          <div>実行金額: {formatNumber(item.actionAmount, 0)}</div>
                           <div className={item.decisionAccuracy === 'SUCCESS' ? 'text-emerald-700' : item.decisionAccuracy === 'FAILURE' ? 'text-red-700' : item.decisionAccuracy === 'MISSED_OPPORTUNITY' ? 'text-amber-700' : 'text-slate-500'}>成績: {item.decisionAccuracy || '未評価'}</div>
                         </div>
                       </div>

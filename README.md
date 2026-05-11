@@ -293,3 +293,38 @@ git push
 3. SUCCESS率、FAILURE率、機会損失件数を確認する
 4. 履歴CSVを出力してルール別成績を検証する
 
+
+## 判定・実行・結果の三層管理
+
+この版では、判定履歴に実際の売買行動を記録できます。
+
+### 追加項目
+
+- actionTaken: 実行有無
+- actionType: BUY / SELL / REDUCE / HOLD / NONE
+- actionDate: 実行日
+- actionPrice: 実行価格
+- actionShares: 実行株数
+- actionAmount: 実行金額
+- actionReason: 実行理由・未実行理由
+- executionGapDays: 判定日から実行日までの日数
+- executionPriceGap: 判定時価格と実行価格の乖離率
+- complianceStatus: COMPLIANT / NOT_EXECUTED / CONTRADICTED / NON_COMPLIANT / NOT_APPLICABLE
+
+### 目的
+
+- decision: システムが出した判定
+- action: 実際の売買行動
+- outcome: その後の結果
+
+この3層を分離することで、ルール自体が悪いのか、実行が遅いのか、未実行が原因なのかを切り分けます。
+
+### 更新手順
+
+```bash
+cd /Users/haradaseiya/Downloads/portfolio-dashboard
+npm run build
+git add .
+git commit -m "Add decision action tracking"
+git push
+```
