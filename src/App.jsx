@@ -670,6 +670,40 @@ const isValidImportedHolding = (holding) => {
 }
 
 
+const normalizeMissingDataImportValue = (fieldName, value) => {
+  const raw = String(value ?? '').trim()
+  if (!fieldName || raw === '') return { ok: false, value: '', reason: '値が空です' }
+
+  if (numericFields.includes(fieldName)) {
+    const normalized = normalizeImportNumber(raw)
+    if (!isImportableNumberForField(fieldName, normalized)) return { ok: false, value: normalized, reason: `${getCoverageFieldLabel(fieldName)}の数値が許容範囲外です` }
+    return { ok: true, value: normalized, reason: '' }
+  }
+
+  if (fieldName === 'dividendCut') {
+    const normalized = normalizeBoolean(raw)
+    if (!['true', 'false'].includes(normalized)) return { ok: false, value: normalized, reason: '減配有無は true / false / あり / なし のみ有効です' }
+    return { ok: true, value: normalized, reason: '' }
+  }
+
+  if (fieldName === 'ruleProfile') {
+    const normalized = raw.toUpperCase()
+    if (!allowedRuleProfiles.includes(normalized)) return { ok: false, value: normalized, reason: '判定プロファイルが許可値外です' }
+    return { ok: true, value: normalized, reason: '' }
+  }
+
+  if (dateFields.includes(fieldName)) {
+    const error = validateDateValue(getCoverageFieldLabel(fieldName), raw)
+    if (error) return { ok: false, value: raw, reason: error }
+    return { ok: true, value: raw, reason: '' }
+  }
+
+  if (evidenceFields.includes(fieldName)) return { ok: true, value: raw, reason: '' }
+
+  return { ok: false, value: raw, reason: '取込対象外の項目です' }
+}
+
+
 const hasAnyEvidenceTargetData = (holding) => {
   const targetFields = [
     'currentPrice',
@@ -3039,6 +3073,108 @@ export default function PortfolioManagementDashboard() {
     }
   }
 
+  const importMissingDataTemplateCsv = async (event) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+
+    if (!file) return
+
+    try {
+      const text = await file.text()
+      const { headers, rows } = parseCsvText(text)
+      const stockCodeSet = new Set(stocks.map((stock) => stock.code))
+
+      if (!headers.includes('code') || !headers.includes('missingField')) {
+        setImportMessage('不足入力CSV取込失敗: code列とmissingField列が必要です。portfolio-missing-data-template.csvを使用してください。')
+        return
+      }
+
+      let importedCount = 0
+      let unknownCount = 0
+      let invalidCount = 0
+      let skippedCount = 0
+      let fxUpdated = false
+      const nextHoldings = { ...holdings }
+      const auditEntries = []
+      let nextFxUpdatedAt = fxUpdatedAtInput
+
+      for (const row of rows) {
+        const code = String(getCsvValue(row, ['code', '銘柄コード'])).trim()
+        const fieldName = String(getCsvValue(row, ['missingField', 'fieldName', '項目'])).trim()
+        const importedValue = getCsvValue(row, ['importedValue', 'value', 'newValue', 'inputValue', '入力値', '反映値'])
+
+        if (!code || !fieldName) {
+          skippedCount += 1
+          continue
+        }
+
+        if (fieldName === 'fxUpdatedAt') {
+          const normalized = normalizeMissingDataImportValue(fieldName, importedValue)
+          if (!normalized.ok) {
+            invalidCount += 1
+            continue
+          }
+          if (String(nextFxUpdatedAt || '') !== String(normalized.value || '')) {
+            auditEntries.push(buildAuditEntry({ code: 'SYSTEM', name: 'USD/JPY更新日', fieldName, previousValue: nextFxUpdatedAt || '', newValue: normalized.value, changeSource: 'missing_data_import', ruleVersion: DECISION_HISTORY_VERSION }))
+            nextFxUpdatedAt = normalized.value
+            fxUpdated = true
+            importedCount += 1
+          } else {
+            skippedCount += 1
+          }
+          continue
+        }
+
+        if (!stockCodeSet.has(code)) {
+          unknownCount += 1
+          continue
+        }
+
+        if (!holdingFields.includes(fieldName)) {
+          invalidCount += 1
+          continue
+        }
+
+        const normalized = normalizeMissingDataImportValue(fieldName, importedValue)
+        if (!normalized.ok) {
+          invalidCount += 1
+          continue
+        }
+
+        const stock = stockByCode.get(code)
+        const previousHolding = nextHoldings[code] || {}
+        const previousValue = previousHolding[fieldName] ?? ''
+        const newValue = normalized.value
+
+        if (String(previousValue) === String(newValue)) {
+          skippedCount += 1
+          continue
+        }
+
+        nextHoldings[code] = { ...previousHolding, [fieldName]: newValue }
+        auditEntries.push(buildAuditEntry({
+          code,
+          name: stock?.name || '',
+          fieldName,
+          previousValue,
+          newValue,
+          changeSource: 'missing_data_import',
+          decisionBefore: stock?.decisionResult?.decision || '',
+          decisionAfter: 'RECALCULATED_AFTER_CHANGE',
+          ruleVersion: DECISION_HISTORY_VERSION,
+        }))
+        importedCount += 1
+      }
+
+      setHoldings(nextHoldings)
+      if (fxUpdated) setFxUpdatedAtInput(nextFxUpdatedAt)
+      appendAuditEntries(auditEntries)
+      setImportMessage(`不足入力CSV取込完了: ${importedCount}件反映 / 未登録コード ${unknownCount}件 / 不正 ${invalidCount}件 / スキップ ${skippedCount}件`)
+    } catch (error) {
+      setImportMessage(`不足入力CSV取込失敗: ${error instanceof Error ? error.message : 'ファイルを読み込めませんでした'}`)
+    }
+  }
+
   const exportCsv = () => {
     const header = [
       'code', 'name', 'market', 'group', 'currency',
@@ -3936,6 +4072,11 @@ export default function PortfolioManagementDashboard() {
                 <button type="button" onClick={exportOperationalReportMarkdown} className="rounded-2xl border border-blue-300 bg-blue-50 px-4 py-3 text-sm font-semibold text-blue-700 hover:bg-blue-100">運用レポートMD</button>
                 <button type="button" onClick={exportOperationalReportJson} className="rounded-2xl border border-blue-300 bg-white px-4 py-3 text-sm font-semibold text-blue-700 hover:bg-blue-50">運用レポートJSON</button>
                 <button type="button" onClick={exportCoverageDiagnosticsCsv} className="rounded-2xl border border-teal-300 bg-teal-50 px-4 py-3 text-sm font-semibold text-teal-700 hover:bg-teal-100">不足診断CSV</button>
+                <button type="button" onClick={exportMissingDataTemplateCsv} className="rounded-2xl border border-teal-300 bg-white px-4 py-3 text-sm font-semibold text-teal-700 hover:bg-teal-50">不足入力テンプレートCSV</button>
+                <label className="cursor-pointer rounded-2xl border border-teal-300 bg-teal-50 px-4 py-3 text-center text-sm font-semibold text-teal-700 hover:bg-teal-100">
+                  不足入力CSV取込
+                  <input type="file" accept=".csv,text/csv" onChange={importMissingDataTemplateCsv} className="hidden" />
+                </label>
                 <button type="button" onClick={clearAuditLog} className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700 hover:bg-rose-100">監査ログ削除</button>
                 <button type="button" onClick={clearDecisionHistory} className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700 hover:bg-rose-100">履歴削除</button>
                 <button type="button" onClick={clearHoldings} className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700 hover:bg-red-100">入力削除</button>
@@ -4013,6 +4154,10 @@ export default function PortfolioManagementDashboard() {
               <div className="flex flex-wrap gap-2">
                 <button type="button" onClick={exportCoverageDiagnosticsCsv} className="rounded-2xl border border-teal-300 bg-teal-50 px-4 py-2 text-xs font-bold text-teal-700 hover:bg-teal-100">不足診断CSV</button>
                 <button type="button" onClick={exportMissingDataTemplateCsv} className="rounded-2xl border border-teal-300 bg-white px-4 py-2 text-xs font-bold text-teal-700 hover:bg-teal-50">不足入力テンプレートCSV</button>
+                <label className="cursor-pointer rounded-2xl border border-teal-300 bg-teal-50 px-4 py-2 text-xs font-bold text-teal-700 hover:bg-teal-100">
+                  不足入力CSV取込
+                  <input type="file" accept=".csv,text/csv" onChange={importMissingDataTemplateCsv} className="hidden" />
+                </label>
               </div>
             </div>
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">

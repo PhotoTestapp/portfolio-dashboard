@@ -530,3 +530,37 @@ code,name,market,group,ruleProfile,missingField,missingFieldLabel,requiredReason
 
 このCSVは、次に入力すべき項目を銘柄別・優先度順に並べるための作業用テンプレートです。直接インポート用ではなく、根拠資料確認・データ収集・入力作業の指示書として使います。
 
+
+## 不足入力テンプレートCSV再取込
+
+`portfolio-missing-data-template.csv` に不足項目の値を追加して、アプリへ再取込できます。
+
+### 追加して使う列
+
+以下のいずれかの列に値を入れてください。
+
+```txt
+importedValue
+value
+newValue
+inputValue
+入力値
+反映値
+```
+
+必須列:
+
+```txt
+code,missingField
+```
+
+### 取込仕様
+
+- `code` と `missingField` をキーに、対象銘柄の対象項目だけを更新します。
+- 更新前後の差分は `auditLog` に `missing_data_import` として記録します。
+- 未登録コード、取込対象外項目、許容範囲外の数値、日付不正は反映しません。
+- `fxUpdatedAt` はシステム項目として更新できます。
+
+### 目的
+
+不足診断CSVを出力して外部で値を埋め、再取込することで、カバレッジ改善作業を往復可能にします。
