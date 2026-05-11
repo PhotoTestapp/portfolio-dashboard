@@ -237,32 +237,30 @@ git push
 
 専用指標が不足している場合は `PROFILE_DATA_REQUIRED` で通常判定を停止します。
 
+## 判定履歴ログ / バックテスト用スナップショット
 
-## ルール設定・バージョン管理
+この版では、現在表示されている全銘柄の機械判定を履歴として保存できます。
 
-この版では判定ルールの固定値を画面上で管理します。
+### 追加機能
 
-- `ruleVersion`: 判定ルールの版
-- `ruleReviewedAt`: ルール確認日。180日超または未入力は `RULE_CONFIG_REQUIRED`
-- `ruleChangeReason`: 変更理由・根拠。5文字未満は `RULE_CONFIG_REQUIRED`
-- `ruleRiskRegime`: `RISK_ON / NORMAL / RISK_OFF`
-- `maxPositionWeight`: REDUCE判定に使う最大個別銘柄比率
-- `maxSectorWeight`: REDUCE判定に使う最大セクター比率
-- `maxPositionBuyWeight`: BUY判定に使う個別銘柄比率上限
-- `maxSectorBuyWeight`: BUY判定に使うセクター比率上限
-- `priceMaxAgeDays / financialMaxAgeDays / fxMaxAgeDays`: STALE_DATA 判定日数
+- `現在判定を履歴保存` ボタン
+- `portfolio-decision-history.csv` 出力
+- JSONバックアップへの `decisionHistory` 同梱
+- JSON復元時の履歴復元
+- 銘柄カード内の過去判定表示
+- 判定日時、判定結果、重大度、判定理由、入力値スナップショット、ポートフォリオ比率、証跡スナップショットを保存
 
-判定優先順位は以下です。
+### 運用上の注意
 
-1. INVALID_DATA
-2. UNVERIFIED_DATA
-3. WEAK_EVIDENCE
-4. MULTIPLE_EVIDENCE_VALUES
-5. MISMATCHED_EVIDENCE
-6. PROFILE_DATA_REQUIRED
-7. RULE_CONFIG_REQUIRED
-8. STALE_DATA
-9. NO_DATA
-10. SELL / REDUCE / BUY / HOLD / WATCH
+履歴保存は自動ではありません。データ更新後、判定結果を固定したいタイミングで `現在判定を履歴保存` を押してください。
 
-ルール設定が未確認・不正な場合、売買判定は停止します。
+### 更新手順
+
+このプロジェクトは prebuilt `dist` 配信方式です。変更後は必ず以下を実行します。
+
+```bash
+npm run build
+git add .
+git commit -m "Add decision history snapshots"
+git push
+```

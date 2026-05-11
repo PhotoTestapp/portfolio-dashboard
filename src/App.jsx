@@ -5,22 +5,9 @@ import { conditionDefinitions, conditionLabels, normalizeStocks } from './utils/
 const marketOrder = ['日本株', '米国株']
 const STORAGE_KEY = 'portfolio-dashboard-holdings-v1'
 const SETTINGS_KEY = 'portfolio-dashboard-settings-v1'
+const HISTORY_KEY = 'portfolio-dashboard-decision-history-v1'
 const DEFAULT_USD_JPY = 155
-const RULE_ENGINE_VERSION = '2026.05-rule-profile-v1'
-const DEFAULT_RULE_CONFIG = {
-  ruleVersion: RULE_ENGINE_VERSION,
-  ruleReviewedAt: '',
-  ruleChangeReason: '',
-  ruleRiskRegime: 'NORMAL',
-  maxPositionWeight: '8',
-  maxSectorWeight: '25',
-  maxPositionBuyWeight: '5',
-  maxSectorBuyWeight: '20',
-  priceMaxAgeDays: '7',
-  financialMaxAgeDays: '100',
-  fxMaxAgeDays: '7',
-}
-const allowedRiskRegimes = ['RISK_ON', 'NORMAL', 'RISK_OFF']
+const DECISION_HISTORY_VERSION = '2026.05-decision-history-v1'
 
 const decisionLabels = {
   INVALID_DATA: 'INVALID_DATA',
@@ -29,7 +16,6 @@ const decisionLabels = {
   MISMATCHED_EVIDENCE: 'MISMATCHED_EVIDENCE',
   MULTIPLE_EVIDENCE_VALUES: 'MULTIPLE_EVIDENCE_VALUES',
   PROFILE_DATA_REQUIRED: 'PROFILE_DATA_REQUIRED',
-  RULE_CONFIG_REQUIRED: 'RULE_CONFIG_REQUIRED',
   STALE_DATA: 'STALE_DATA',
   BUY: 'BUY',
   HOLD: 'HOLD',
@@ -46,7 +32,6 @@ const decisionTone = {
   MISMATCHED_EVIDENCE: 'bg-rose-50 border-rose-300 text-rose-800',
   MULTIPLE_EVIDENCE_VALUES: 'bg-pink-50 border-pink-300 text-pink-800',
   PROFILE_DATA_REQUIRED: 'bg-indigo-50 border-indigo-300 text-indigo-800',
-  RULE_CONFIG_REQUIRED: 'bg-cyan-50 border-cyan-300 text-cyan-800',
   STALE_DATA: 'bg-orange-50 border-orange-300 text-orange-800',
   BUY: 'bg-emerald-50 border-emerald-300 text-emerald-800',
   HOLD: 'bg-sky-50 border-sky-300 text-sky-800',
@@ -149,76 +134,11 @@ const validationRules = {
 }
 
 const usdJpyRule = { label: 'USD/JPY', min: 50, max: 300, minExclusive: false }
-
-const ruleConfigNumericRules = {
-  maxPositionWeight: { label: '最大個別銘柄比率', min: 1, max: 50, minExclusive: false },
-  maxSectorWeight: { label: '最大セクター比率', min: 5, max: 80, minExclusive: false },
-  maxPositionBuyWeight: { label: '買い許容個別比率', min: 0, max: 50, minExclusive: false },
-  maxSectorBuyWeight: { label: '買い許容セクター比率', min: 0, max: 80, minExclusive: false },
-  priceMaxAgeDays: { label: '価格期限日数', min: 1, max: 30, minExclusive: false },
-  financialMaxAgeDays: { label: '財務期限日数', min: 30, max: 400, minExclusive: false },
-  fxMaxAgeDays: { label: '為替期限日数', min: 1, max: 30, minExclusive: false },
+const staleRules = {
+  price: { label: '現在価格', maxAgeDays: 7 },
+  financial: { label: '財務データ', maxAgeDays: 100 },
+  fx: { label: 'USD/JPY', maxAgeDays: 7 },
 }
-
-const normalizeRuleConfig = (settings = {}) => ({
-  ...DEFAULT_RULE_CONFIG,
-  ...(settings.ruleConfig || {}),
-})
-
-const getRuleNumber = (ruleConfig, field) => {
-  const value = toNumber(ruleConfig[field])
-  const fallback = toNumber(DEFAULT_RULE_CONFIG[field])
-  return value ?? fallback
-}
-
-const validateRuleConfig = (ruleConfig) => {
-  const errors = []
-  const fieldErrors = {}
-  if (!String(ruleConfig.ruleVersion || '').trim()) {
-    fieldErrors.ruleVersion = 'ルールバージョンが未入力'
-    errors.push('ルールバージョンが未入力')
-  }
-  if (!allowedRiskRegimes.includes(ruleConfig.ruleRiskRegime)) {
-    fieldErrors.ruleRiskRegime = 'リスク局面が不正'
-    errors.push('リスク局面が不正')
-  }
-  const reviewedAtError = validateDateValue('ルール確認日', ruleConfig.ruleReviewedAt)
-  if (reviewedAtError) {
-    fieldErrors.ruleReviewedAt = reviewedAtError
-    errors.push(reviewedAtError)
-  } else {
-    const age = daysSince(ruleConfig.ruleReviewedAt)
-    if (age !== null && age > 180) {
-      fieldErrors.ruleReviewedAt = `ルール確認日が${age}日前（期限180日）`
-      errors.push(`ルール確認日が${age}日前（期限180日）`)
-    }
-  }
-  if (!String(ruleConfig.ruleChangeReason || '').trim() || String(ruleConfig.ruleChangeReason || '').trim().length < 5) {
-    fieldErrors.ruleChangeReason = '変更理由・根拠が5文字未満'
-    errors.push('変更理由・根拠が5文字未満')
-  }
-  for (const [field, rule] of Object.entries(ruleConfigNumericRules)) {
-    const error = validateNumericValue(field, ruleConfig[field], rule)
-    if (error) {
-      fieldErrors[field] = error
-      errors.push(error)
-    }
-  }
-  const maxPosition = getRuleNumber(ruleConfig, 'maxPositionWeight')
-  const maxPositionBuy = getRuleNumber(ruleConfig, 'maxPositionBuyWeight')
-  const maxSector = getRuleNumber(ruleConfig, 'maxSectorWeight')
-  const maxSectorBuy = getRuleNumber(ruleConfig, 'maxSectorBuyWeight')
-  if (maxPositionBuy >= maxPosition) {
-    fieldErrors.maxPositionBuyWeight = '買い許容個別比率は最大個別比率未満にする'
-    errors.push('買い許容個別比率は最大個別比率未満にする')
-  }
-  if (maxSectorBuy >= maxSector) {
-    fieldErrors.maxSectorBuyWeight = '買い許容セクター比率は最大セクター比率未満にする'
-    errors.push('買い許容セクター比率は最大セクター比率未満にする')
-  }
-  return { errors: [...new Set(errors)], fieldErrors }
-}
-
 
 const dataTypeOptions = [
   { value: 'actual', label: '実績' },
@@ -787,6 +707,51 @@ const downloadTextFile = (content, filename, type) => {
   URL.revokeObjectURL(url)
 }
 
+const safeArray = (value) => Array.isArray(value) ? value : []
+
+const sanitizeDecisionHistory = (items) => {
+  if (!Array.isArray(items)) return []
+  return items
+    .filter((item) => item && typeof item === 'object' && item.code && item.decisionDate)
+    .map((item) => ({
+      runId: String(item.runId || item.decisionDate || `run-${Date.now()}`),
+      decisionDate: String(item.decisionDate || ''),
+      createdAt: String(item.createdAt || item.decisionDate || ''),
+      code: String(item.code || ''),
+      name: String(item.name || ''),
+      market: String(item.market || ''),
+      group: String(item.group || ''),
+      currency: String(item.currency || ''),
+      decision: String(item.decision || ''),
+      severity: String(item.severity || ''),
+      reasons: safeArray(item.reasons).map(String),
+      ruleVersion: String(item.ruleVersion || DECISION_HISTORY_VERSION),
+      ruleProfile: String(item.ruleProfile || ''),
+      riskRegime: String(item.riskRegime || 'STATIC'),
+      inputSnapshot: item.inputSnapshot && typeof item.inputSnapshot === 'object' ? item.inputSnapshot : {},
+      portfolioSnapshot: item.portfolioSnapshot && typeof item.portfolioSnapshot === 'object' ? item.portfolioSnapshot : {},
+      evidenceSnapshot: item.evidenceSnapshot && typeof item.evidenceSnapshot === 'object' ? item.evidenceSnapshot : {},
+    }))
+}
+
+const buildHistoryRuns = (decisionHistory) => {
+  const map = new Map()
+  for (const item of decisionHistory) {
+    const runId = item.runId || item.decisionDate
+    const current = map.get(runId) || {
+      runId,
+      decisionDate: item.decisionDate,
+      ruleVersion: item.ruleVersion,
+      total: 0,
+      counts: {},
+    }
+    current.total += 1
+    current.counts[item.decision] = (current.counts[item.decision] || 0) + 1
+    map.set(runId, current)
+  }
+  return [...map.values()].sort((a, b) => String(b.decisionDate).localeCompare(String(a.decisionDate)))
+}
+
 const getMissingRequiredData = (stock) => {
   const missing = []
   if (stock.shares === null) missing.push('保有数')
@@ -802,29 +767,26 @@ const getMissingRequiredData = (stock) => {
   return missing
 }
 
-const getStaleDataReasons = (stock, ruleConfig) => {
-  const priceMaxAgeDays = getRuleNumber(ruleConfig, 'priceMaxAgeDays')
-  const financialMaxAgeDays = getRuleNumber(ruleConfig, 'financialMaxAgeDays')
-  const fxMaxAgeDays = getRuleNumber(ruleConfig, 'fxMaxAgeDays')
+const getStaleDataReasons = (stock) => {
   const reasons = []
 
   if (stock.currentPrice !== null) {
     const age = daysSince(stock.priceUpdatedAt)
     if (age === null) reasons.push('価格更新日が未入力')
-    else if (age > priceMaxAgeDays) reasons.push(`現在価格が${age}日前のデータ（期限${priceMaxAgeDays}日）`)
+    else if (age > staleRules.price.maxAgeDays) reasons.push(`現在価格が${age}日前のデータ（期限${staleRules.price.maxAgeDays}日）`)
   }
 
   const hasFinancialData = [stock.payoutRatio, stock.operatingCashFlowYoY, stock.revenueYoY, stock.epsYoY, stock.equityRatio, stock.debtToEquity, stock.dividendCut].some((value) => value !== null)
   if (hasFinancialData) {
     const age = daysSince(stock.financialUpdatedAt)
     if (age === null) reasons.push('財務更新日が未入力')
-    else if (age > financialMaxAgeDays) reasons.push(`財務データが${age}日前のデータ（期限${financialMaxAgeDays}日）`)
+    else if (age > staleRules.financial.maxAgeDays) reasons.push(`財務データが${age}日前のデータ（期限${staleRules.financial.maxAgeDays}日）`)
   }
 
   if (stock.currency === 'USD' && (stock.currentPrice !== null || stock.hasPosition)) {
     const age = daysSince(stock.fxUpdatedAt)
     if (age === null) reasons.push('USD/JPY更新日が未入力')
-    else if (age > fxMaxAgeDays) reasons.push(`USD/JPYが${age}日前のデータ（期限${fxMaxAgeDays}日）`)
+    else if (age > staleRules.fx.maxAgeDays) reasons.push(`USD/JPYが${age}日前のデータ（期限${staleRules.fx.maxAgeDays}日）`)
   }
 
   return [...new Set(reasons)]
@@ -884,13 +846,11 @@ const getSellReasonsByProfile = (stock) => {
   return reasons
 }
 
-const getReduceReasonsByProfile = (stock, ruleConfig) => {
-  const maxPositionWeight = getRuleNumber(ruleConfig, 'maxPositionWeight')
-  const maxSectorWeight = getRuleNumber(ruleConfig, 'maxSectorWeight')
+const getReduceReasonsByProfile = (stock) => {
   const profile = stock.ruleProfile || 'GENERAL'
   const reasons = []
-  if (stock.positionWeight >= maxPositionWeight) reasons.push(`個別銘柄比率${maxPositionWeight}%以上`)
-  if (stock.sectorWeight >= maxSectorWeight) reasons.push(`同一セクター比率${maxSectorWeight}%以上`)
+  if (stock.positionWeight >= 8) reasons.push('個別銘柄比率8%以上')
+  if (stock.sectorWeight >= 25) reasons.push('同一セクター比率25%以上')
   if (stock.hasPosition && stock.unrealizedGainRate !== null && stock.unrealizedGainRate <= -20) reasons.push('含み損-20%以下')
 
   switch (profile) {
@@ -936,13 +896,11 @@ const getReduceReasonsByProfile = (stock, ruleConfig) => {
   return reasons
 }
 
-const getBuyChecksByProfile = (stock, ruleConfig) => {
-  const maxPositionBuyWeight = getRuleNumber(ruleConfig, 'maxPositionBuyWeight')
-  const maxSectorBuyWeight = getRuleNumber(ruleConfig, 'maxSectorBuyWeight')
+const getBuyChecksByProfile = (stock) => {
   const profile = stock.ruleProfile || 'GENERAL'
   const common = [
-    { passed: stock.positionWeight < maxPositionBuyWeight, reason: `個別銘柄比率${maxPositionBuyWeight}%未満` },
-    { passed: stock.sectorWeight < maxSectorBuyWeight, reason: `同一セクター比率${maxSectorBuyWeight}%未満` },
+    { passed: stock.positionWeight < 5, reason: '個別銘柄比率5%未満' },
+    { passed: stock.sectorWeight < 20, reason: '同一セクター比率20%未満' },
     { passed: stock.dividendCut === false, reason: '減配なし' },
   ]
 
@@ -963,8 +921,8 @@ const getBuyChecksByProfile = (stock, ruleConfig) => {
         { passed: stock.reitOccupancyRate >= 95, reason: 'REIT: 稼働率95%以上' },
         { passed: stock.reitFfoYoY >= 0, reason: 'REIT: FFO前年比0%以上' },
         { passed: stock.dividendYield >= 4, reason: 'REIT: 分配金利回り4%以上' },
-        { passed: stock.positionWeight < maxPositionBuyWeight, reason: `個別銘柄比率${maxPositionBuyWeight}%未満` },
-        { passed: stock.sectorWeight < maxSectorBuyWeight, reason: `同一セクター比率${maxSectorBuyWeight}%未満` },
+        { passed: stock.positionWeight < 5, reason: '個別銘柄比率5%未満' },
+        { passed: stock.sectorWeight < 20, reason: '同一セクター比率20%未満' },
         { passed: stock.dividendCut === false, reason: '分配金減額なし' },
       ]
     case 'UTILITY':
@@ -991,8 +949,8 @@ const getBuyChecksByProfile = (stock, ruleConfig) => {
         { passed: stock.operatingMargin >= 10, reason: 'GROWTH_TECH: 営業利益率10%以上' },
         { passed: stock.epsYoY >= 0, reason: 'GROWTH_TECH: EPS前年比0%以上' },
         { passed: stock.operatingCashFlowYoY >= 0, reason: 'GROWTH_TECH: 営業CF前年比0%以上' },
-        { passed: stock.positionWeight < maxPositionBuyWeight, reason: `個別銘柄比率${maxPositionBuyWeight}%未満` },
-        { passed: stock.sectorWeight < maxSectorBuyWeight, reason: `同一セクター比率${maxSectorBuyWeight}%未満` },
+        { passed: stock.positionWeight < 5, reason: '個別銘柄比率5%未満' },
+        { passed: stock.sectorWeight < 20, reason: '同一セクター比率20%未満' },
       ]
     case 'HEALTHCARE':
       return [
@@ -1025,7 +983,7 @@ const getBuyChecksByProfile = (stock, ruleConfig) => {
   }
 }
 
-const judgeStock = (stock, ruleConfig, ruleConfigValidation) => {
+const judgeStock = (stock) => {
   if (stock.validationErrors?.length > 0) {
     return {
       decision: 'INVALID_DATA',
@@ -1066,20 +1024,7 @@ const judgeStock = (stock, ruleConfig, ruleConfigValidation) => {
     }
   }
 
-  const profileDataReasons = getProfileDataRequiredReasons(stock)
-  if (profileDataReasons.length > 0) {
-    return { decision: 'PROFILE_DATA_REQUIRED', severity: 'HIGH', reasons: [`判定プロファイル: ${stock.ruleProfile || 'GENERAL'}`, ...profileDataReasons] }
-  }
-
-  if (ruleConfigValidation?.errors?.length > 0) {
-    return {
-      decision: 'RULE_CONFIG_REQUIRED',
-      severity: 'HIGH',
-      reasons: ['ルール設定が未確認または不正', ...ruleConfigValidation.errors],
-    }
-  }
-
-  const staleReasons = getStaleDataReasons(stock, ruleConfig)
+  const staleReasons = getStaleDataReasons(stock)
   if (staleReasons.length > 0) {
     return {
       decision: 'STALE_DATA',
@@ -1098,6 +1043,10 @@ const judgeStock = (stock, ruleConfig, ruleConfigValidation) => {
   }
 
   const profile = stock.ruleProfile || 'GENERAL'
+  const profileDataReasons = getProfileDataRequiredReasons(stock)
+  if (profileDataReasons.length > 0) {
+    return { decision: 'PROFILE_DATA_REQUIRED', severity: 'HIGH', reasons: [`判定プロファイル: ${profile}`, ...profileDataReasons] }
+  }
 
   const sellReasons = getSellReasonsByProfile(stock)
 
@@ -1105,13 +1054,13 @@ const judgeStock = (stock, ruleConfig, ruleConfigValidation) => {
     return { decision: 'SELL', severity: 'CRITICAL', reasons: [`判定プロファイル: ${profile}`, ...sellReasons] }
   }
 
-  const reduceReasons = getReduceReasonsByProfile(stock, ruleConfig)
+  const reduceReasons = getReduceReasonsByProfile(stock)
 
   if (reduceReasons.length > 0) {
     return { decision: 'REDUCE', severity: 'HIGH', reasons: [`判定プロファイル: ${profile}`, ...reduceReasons] }
   }
 
-  const buyChecks = getBuyChecksByProfile(stock, ruleConfig)
+  const buyChecks = getBuyChecksByProfile(stock)
 
   if (buyChecks.every((check) => check.passed)) {
     return {
@@ -1304,7 +1253,7 @@ function ProfileMetricInputs({ profile, holding, fieldErrors, updateField }) {
   )
 }
 
-function StockCard({ stock, holding, onHoldingChange }) {
+function StockCard({ stock, holding, onHoldingChange, decisionHistory = [] }) {
   const result = stock.decisionResult || { decision: 'NO_DATA', severity: 'HIGH', reasons: ['判定不可'] }
   const fieldErrors = { ...(stock.validationFieldErrors || {}), ...(stock.verificationFieldErrors || {}), ...(stock.evidenceFieldErrors || {}) }
 
@@ -1479,6 +1428,23 @@ function StockCard({ stock, holding, onHoldingChange }) {
         <div className="mt-2 text-[11px] font-semibold">人間による判定上書き: 不可</div>
       </div>
 
+      <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+        <div className="mb-2 text-xs font-bold text-slate-700">銘柄別過去判定</div>
+        {decisionHistory.length === 0 ? (
+          <div className="text-[11px] font-semibold text-slate-500">履歴なし。上部の「現在判定を履歴保存」で記録。</div>
+        ) : (
+          <div className="space-y-1">
+            {decisionHistory.slice(0, 3).map((item) => (
+              <div key={`${item.runId}-${item.code}`} className="flex items-center justify-between gap-2 rounded-xl border border-white bg-white px-3 py-2 text-[11px] font-semibold text-slate-700">
+                <span>{String(item.decisionDate).slice(0, 10)}</span>
+                <span className={`rounded-full border px-2 py-0.5 ${decisionTone[item.decision] || 'bg-slate-50 border-slate-200 text-slate-700'}`}>{item.decision}</span>
+                <span className="text-slate-400">{item.ruleVersion || '-'}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       <div className="mt-3 grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
         <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
           <div className="font-semibold text-slate-500">個別比率</div>
@@ -1524,25 +1490,15 @@ export default function PortfolioManagementDashboard() {
   const [settings, setSettings] = useState(() => {
     try {
       const saved = window.localStorage.getItem(SETTINGS_KEY)
-      return saved ? JSON.parse(saved) : { usdJpy: String(DEFAULT_USD_JPY), fxUpdatedAt: '', ruleConfig: DEFAULT_RULE_CONFIG }
+      return saved ? JSON.parse(saved) : { usdJpy: String(DEFAULT_USD_JPY), fxUpdatedAt: '' }
     } catch {
-      return { usdJpy: String(DEFAULT_USD_JPY), fxUpdatedAt: '', ruleConfig: DEFAULT_RULE_CONFIG }
+      return { usdJpy: String(DEFAULT_USD_JPY), fxUpdatedAt: '' }
     }
   })
   const usdJpyInput = settings.usdJpy ?? String(DEFAULT_USD_JPY)
   const fxUpdatedAtInput = settings.fxUpdatedAt ?? ''
   const setUsdJpyInput = (value) => setSettings((current) => ({ ...current, usdJpy: value }))
   const setFxUpdatedAtInput = (value) => setSettings((current) => ({ ...current, fxUpdatedAt: value }))
-  const ruleConfig = useMemo(() => normalizeRuleConfig(settings), [settings])
-  const ruleConfigValidation = useMemo(() => validateRuleConfig(ruleConfig), [ruleConfig])
-  const setRuleConfigField = (field, value) => setSettings((current) => ({
-    ...current,
-    ruleConfig: { ...normalizeRuleConfig(current), [field]: value },
-  }))
-  const applyDefaultRuleConfig = () => setSettings((current) => ({
-    ...current,
-    ruleConfig: { ...DEFAULT_RULE_CONFIG, ruleReviewedAt: todayInputDate(), ruleChangeReason: '初期ルールセット確認' },
-  }))
   const [holdings, setHoldings] = useState(() => {
     try {
       const saved = window.localStorage.getItem(STORAGE_KEY)
@@ -1552,6 +1508,14 @@ export default function PortfolioManagementDashboard() {
     }
   })
   const [importMessage, setImportMessage] = useState('')
+  const [decisionHistory, setDecisionHistory] = useState(() => {
+    try {
+      const saved = window.localStorage.getItem(HISTORY_KEY)
+      return saved ? sanitizeDecisionHistory(JSON.parse(saved)) : []
+    } catch {
+      return []
+    }
+  })
 
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(holdings))
@@ -1560,6 +1524,10 @@ export default function PortfolioManagementDashboard() {
   useEffect(() => {
     window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings))
   }, [settings])
+
+  useEffect(() => {
+    window.localStorage.setItem(HISTORY_KEY, JSON.stringify(decisionHistory))
+  }, [decisionHistory])
 
   const stocks = useMemo(() => normalizeStocks({ sections, businessMap, thesisMap, buyMap, sellMap }), [])
   const allGroups = useMemo(() => [...new Set(stocks.map((stock) => stock.group))], [stocks])
@@ -1697,9 +1665,9 @@ export default function PortfolioManagementDashboard() {
       const positionWeight = totalMarketValueJPY > 0 && stock.marketValueJPY ? (stock.marketValueJPY / totalMarketValueJPY) * 100 : 0
       const sectorWeight = totalMarketValueJPY > 0 ? ((groupTotals.get(stock.group) || 0) / totalMarketValueJPY) * 100 : 0
       const withWeights = { ...stock, positionWeight, sectorWeight }
-      return { ...withWeights, ruleConfigVersion: ruleConfig.ruleVersion, ruleRiskRegime: ruleConfig.ruleRiskRegime, decisionResult: judgeStock(withWeights, ruleConfig, ruleConfigValidation) }
+      return { ...withWeights, decisionResult: judgeStock(withWeights) }
     })
-  }, [stocks, holdings, usdJpy, usdJpyInput, fxUpdatedAtInput, ruleConfig, ruleConfigValidation])
+  }, [stocks, holdings, usdJpy, usdJpyInput, fxUpdatedAtInput])
 
   const filteredStocks = useMemo(() => {
     const normalizedKeyword = keyword.trim().toLowerCase()
@@ -1725,8 +1693,6 @@ export default function PortfolioManagementDashboard() {
           stock.sellCondition,
           stock.currency,
           stock.decisionResult?.decision,
-          stock.ruleConfigVersion,
-          stock.ruleRiskRegime,
           stock.sourceName,
           stock.sourceUrl,
           stock.fiscalPeriod,
@@ -1867,6 +1833,20 @@ export default function PortfolioManagementDashboard() {
     }
   }, [enrichedStocks])
 
+  const historyRuns = useMemo(() => buildHistoryRuns(decisionHistory), [decisionHistory])
+  const latestHistoryRun = historyRuns[0] || null
+  const stockDecisionHistoryMap = useMemo(() => {
+    const map = new Map()
+    for (const item of decisionHistory) {
+      if (!map.has(item.code)) map.set(item.code, [])
+      map.get(item.code).push(item)
+    }
+    for (const list of map.values()) {
+      list.sort((a, b) => String(b.decisionDate).localeCompare(String(a.decisionDate)))
+    }
+    return map
+  }, [decisionHistory])
+
   const totalCount = filteredStocks.length
   const jpCount = filteredStocks.filter((stock) => stock.market === '日本株').length
   const usCount = filteredStocks.filter((stock) => stock.market === '米国株').length
@@ -1977,7 +1957,7 @@ export default function PortfolioManagementDashboard() {
       'shares', 'averagePrice', 'currentPrice', 'annualDividend',
       'payoutRatio', 'operatingCashFlowYoY', 'revenueYoY', 'epsYoY', 'equityRatio', 'debtToEquity', 'dividendCut', 'ruleProfile',
       'bankCapitalRatio', 'bankNplRatio', 'bankCreditCostRatio', 'bankNetInterestMargin', 'reitLtv', 'reitOccupancyRate', 'reitNavRatio', 'reitFfoYoY', 'utilityCapexToSales', 'utilityFuelCostYoY', 'cyclicalMarketIndexYoY', 'inventoryYoY', 'capacityUtilization', 'growthFcfYoY', 'operatingMargin', 'rdToSales', 'pipelineProgress', 'financialAumYoY', 'financialCreditCostRatio',
-      'priceUpdatedAt', 'financialUpdatedAt', 'fxUpdatedAt', 'ruleVersion', 'ruleRiskRegime', 'ruleReviewedAt', 'ruleChangeReason',
+      'priceUpdatedAt', 'financialUpdatedAt', 'fxUpdatedAt',
       'sourceName', 'sourceUrl', 'fiscalPeriod', 'dataType', 'confirmedAt',
       'sourcePage', 'sourceQuote', 'selectedEvidenceValue', 'sourceMetricName', 'sourceUnit', 'evidenceMemo',
       'decision', 'severity', 'decisionReasons', 'validationErrors', 'verificationErrors', 'evidenceErrors', 'multipleEvidenceValueErrors', 'evidenceMatchErrors',
@@ -2024,10 +2004,6 @@ export default function PortfolioManagementDashboard() {
       stock.holding.priceUpdatedAt || '',
       stock.holding.financialUpdatedAt || '',
       stock.fxUpdatedAt || '',
-      ruleConfig.ruleVersion || '',
-      ruleConfig.ruleRiskRegime || '',
-      ruleConfig.ruleReviewedAt || '',
-      ruleConfig.ruleChangeReason || '',
       stock.holding.sourceName || '',
       stock.holding.sourceUrl || '',
       stock.holding.fiscalPeriod || '',
@@ -2075,8 +2051,8 @@ export default function PortfolioManagementDashboard() {
       exportedAt: new Date().toISOString(),
       usdJpy: usdJpyInput,
       fxUpdatedAt: fxUpdatedAtInput,
-      ruleConfig,
       holdings,
+      decisionHistory,
       rules: {
         sell: ['減配あり', '配当性向100%以上', '営業CF前年比-30%以下', 'EPS前年比-30%以下', '自己資本比率20%未満', '有利子負債倍率5倍以上'],
         reduce: ['個別銘柄比率8%以上', '同一セクター比率25%以上', '配当性向80%以上', '営業CF前年比-15%以下', '含み損-20%以下'],
@@ -2088,15 +2064,8 @@ export default function PortfolioManagementDashboard() {
         multipleEvidenceValues: ['引用文に複数数値がある場合は採用証跡値が必須', '採用証跡値が引用文内数値と一致しない場合は判定停止'],
         mismatchedEvidence: ['採用証跡値と入力値の不一致', '許容差超過'],
         ruleProfiles: ruleProfileOptions.map((option) => option.value),
-        ruleVersion: ruleConfig.ruleVersion,
-        ruleReviewedAt: ruleConfig.ruleReviewedAt,
-        ruleRiskRegime: ruleConfig.ruleRiskRegime,
-        concentrationLimits: {
-          maxPositionWeight: ruleConfig.maxPositionWeight,
-          maxSectorWeight: ruleConfig.maxSectorWeight,
-          maxPositionBuyWeight: ruleConfig.maxPositionBuyWeight,
-          maxSectorBuyWeight: ruleConfig.maxSectorBuyWeight,
-        },
+        decisionHistoryVersion: DECISION_HISTORY_VERSION,
+        decisionHistory: ['判定日時', '入力値スナップショット', 'ポートフォリオ比率', '証跡スナップショットを保存'],
       },
     }
     downloadTextFile(JSON.stringify(backup, null, 2), 'portfolio-dashboard-backup.json', 'application/json;charset=utf-8;')
@@ -2177,16 +2146,91 @@ export default function PortfolioManagementDashboard() {
       if (parsed.fxUpdatedAt !== undefined && validateDateValue('USD/JPY更新日', parsed.fxUpdatedAt) === null) {
         setFxUpdatedAtInput(String(parsed.fxUpdatedAt))
       }
-      if (parsed.ruleConfig && typeof parsed.ruleConfig === 'object' && !Array.isArray(parsed.ruleConfig)) {
-        const nextRuleConfig = { ...DEFAULT_RULE_CONFIG, ...parsed.ruleConfig }
-        const check = validateRuleConfig(nextRuleConfig)
-        if (check.errors.length === 0) {
-          setSettings((current) => ({ ...current, ruleConfig: nextRuleConfig }))
-        }
+      if (Array.isArray(parsed.decisionHistory)) {
+        setDecisionHistory(sanitizeDecisionHistory(parsed.decisionHistory))
       }
-      setImportMessage(`JSON取込完了: ${importedCount}件反映 / 未登録コード ${unknownCount}件 / 数値不正 ${invalidCount}件`)
+      setImportMessage(`JSON取込完了: ${importedCount}件反映 / 未登録コード ${unknownCount}件 / 数値不正 ${invalidCount}件 / 履歴 ${Array.isArray(parsed.decisionHistory) ? parsed.decisionHistory.length : 0}件`)
     } catch (error) {
       setImportMessage(`JSON取込失敗: ${error instanceof Error ? error.message : 'ファイルを読み込めませんでした'}`)
+    }
+  }
+
+  const saveDecisionHistorySnapshot = () => {
+    const decisionDate = new Date().toISOString()
+    const runId = `run-${Date.now()}`
+    const entries = enrichedStocks.map((stock) => ({
+      runId,
+      decisionDate,
+      createdAt: decisionDate,
+      code: stock.code,
+      name: stock.name,
+      market: stock.market,
+      group: stock.group,
+      currency: stock.currency,
+      decision: stock.decisionResult?.decision || 'NO_DATA',
+      severity: stock.decisionResult?.severity || 'HIGH',
+      reasons: stock.decisionResult?.reasons || [],
+      ruleVersion: DECISION_HISTORY_VERSION,
+      ruleProfile: stock.ruleProfile || 'GENERAL',
+      riskRegime: 'STATIC',
+      inputSnapshot: { ...(holdings[stock.code] || {}) },
+      portfolioSnapshot: {
+        marketValueJPY: stock.marketValueJPY,
+        costJPY: stock.costJPY,
+        pnlJPY: stock.pnlJPY,
+        annualDividendJPY: stock.annualDividendJPY,
+        dividendYield: stock.dividendYield,
+        positionWeight: stock.positionWeight,
+        sectorWeight: stock.sectorWeight,
+        totalMarketValueJPY: portfolioSummary.totalMarketValueJPY,
+        totalCostJPY: portfolioSummary.totalCostJPY,
+      },
+      evidenceSnapshot: {
+        sourceName: stock.holding?.sourceName || '',
+        sourceUrl: stock.holding?.sourceUrl || '',
+        fiscalPeriod: stock.holding?.fiscalPeriod || '',
+        dataType: stock.holding?.dataType || '',
+        confirmedAt: stock.holding?.confirmedAt || '',
+        sourcePage: stock.holding?.sourcePage || '',
+        sourceQuote: stock.holding?.sourceQuote || '',
+        selectedEvidenceValue: stock.holding?.selectedEvidenceValue || '',
+        sourceMetricName: stock.holding?.sourceMetricName || '',
+        sourceUnit: stock.holding?.sourceUnit || '',
+      },
+    }))
+    setDecisionHistory((current) => [...entries, ...current].slice(0, 10000))
+    setImportMessage(`判定履歴保存完了: ${entries.length}件 / ${decisionDate.slice(0, 19).replace('T', ' ')}`)
+  }
+
+  const exportDecisionHistoryCsv = () => {
+    const header = ['runId', 'decisionDate', 'code', 'name', 'market', 'group', 'decision', 'severity', 'ruleVersion', 'ruleProfile', 'riskRegime', 'reasons', 'marketValueJPY', 'positionWeight', 'sectorWeight']
+    const rows = decisionHistory.map((item) => [
+      item.runId,
+      item.decisionDate,
+      item.code,
+      item.name,
+      item.market,
+      item.group,
+      item.decision,
+      item.severity,
+      item.ruleVersion,
+      item.ruleProfile,
+      item.riskRegime,
+      safeArray(item.reasons).join(' / '),
+      item.portfolioSnapshot?.marketValueJPY ?? '',
+      item.portfolioSnapshot?.positionWeight ?? '',
+      item.portfolioSnapshot?.sectorWeight ?? '',
+    ])
+    const csv = [header, ...rows]
+      .map((row) => row.map((cell) => `"${String(cell ?? '').replaceAll('\"', '\"\"')}"`).join(','))
+      .join('\n')
+    downloadTextFile(`\uFEFF${csv}`, 'portfolio-decision-history.csv', 'text/csv;charset=utf-8;')
+  }
+
+  const clearDecisionHistory = () => {
+    if (window.confirm('判定履歴をすべて削除します。実行しますか？')) {
+      setDecisionHistory([])
+      setImportMessage('判定履歴を削除しました。')
     }
   }
 
@@ -2268,55 +2312,13 @@ export default function PortfolioManagementDashboard() {
                   JSON復元
                   <input type="file" accept=".json,application/json" onChange={importJson} className="hidden" />
                 </label>
+                <button type="button" onClick={saveDecisionHistorySnapshot} className="rounded-2xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700 hover:bg-emerald-100">現在判定を履歴保存</button>
+                <button type="button" onClick={exportDecisionHistoryCsv} className="rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50">履歴CSV出力</button>
+                <button type="button" onClick={clearDecisionHistory} className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700 hover:bg-rose-100">履歴削除</button>
                 <button type="button" onClick={clearHoldings} className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700 hover:bg-red-100">入力削除</button>
               </div>
 
               {importMessage && <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm font-semibold text-sky-800">{importMessage}</div>}
-
-              <div className="rounded-3xl border border-cyan-200 bg-cyan-50/70 p-5">
-                <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-                  <div>
-                    <h2 className="text-lg font-bold text-cyan-900">ルール設定・バージョン管理</h2>
-                    <p className="text-xs font-semibold text-cyan-700">判定結果に使った閾値・確認日・変更理由を固定する。未確認なら RULE_CONFIG_REQUIRED で停止。</p>
-                  </div>
-                  <button type="button" onClick={applyDefaultRuleConfig} className="rounded-2xl border border-cyan-300 bg-white px-4 py-2 text-xs font-bold text-cyan-800 hover:bg-cyan-100">標準ルールを確認済みにする</button>
-                </div>
-                <div className="grid gap-3 md:grid-cols-4">
-                  <InputCell label="ルールバージョン" value={ruleConfig.ruleVersion} onChange={(value) => setRuleConfigField('ruleVersion', value)} error={ruleConfigValidation.fieldErrors.ruleVersion} />
-                  <label className="block">
-                    <span className={`mb-1 block text-[11px] font-semibold ${ruleConfigValidation.fieldErrors.ruleRiskRegime ? 'text-red-700' : 'text-slate-500'}`}>リスク局面</span>
-                    <select value={ruleConfig.ruleRiskRegime} onChange={(event) => setRuleConfigField('ruleRiskRegime', event.target.value)} className={`w-full rounded-xl border bg-white px-3 py-2 text-xs text-slate-900 outline-none transition focus:ring-4 ${ruleConfigValidation.fieldErrors.ruleRiskRegime ? 'border-red-300 focus:border-red-400 focus:ring-red-100' : 'border-slate-200 focus:border-sky-400 focus:ring-sky-100'}`}>
-                      <option value="RISK_ON">RISK_ON</option>
-                      <option value="NORMAL">NORMAL</option>
-                      <option value="RISK_OFF">RISK_OFF</option>
-                    </select>
-                  </label>
-                  <label className="block">
-                    <span className={`mb-1 block text-[11px] font-semibold ${ruleConfigValidation.fieldErrors.ruleReviewedAt ? 'text-red-700' : 'text-slate-500'}`}>ルール確認日</span>
-                    <input type="date" value={ruleConfig.ruleReviewedAt} onChange={(event) => setRuleConfigField('ruleReviewedAt', event.target.value)} className={`w-full rounded-xl border bg-white px-3 py-2 text-xs text-slate-900 outline-none transition focus:ring-4 ${ruleConfigValidation.fieldErrors.ruleReviewedAt ? 'border-red-300 focus:border-red-400 focus:ring-red-100' : 'border-slate-200 focus:border-sky-400 focus:ring-sky-100'}`} />
-                    {ruleConfigValidation.fieldErrors.ruleReviewedAt ? <span className="mt-1 block text-[10px] font-semibold text-red-600">{ruleConfigValidation.fieldErrors.ruleReviewedAt}</span> : null}
-                  </label>
-                  <InputCell label="変更理由・根拠" value={ruleConfig.ruleChangeReason} onChange={(value) => setRuleConfigField('ruleChangeReason', value)} error={ruleConfigValidation.fieldErrors.ruleChangeReason} />
-                  <InputCell label="最大個別比率(%)" value={ruleConfig.maxPositionWeight} onChange={(value) => setRuleConfigField('maxPositionWeight', value)} error={ruleConfigValidation.fieldErrors.maxPositionWeight} />
-                  <InputCell label="最大セクター比率(%)" value={ruleConfig.maxSectorWeight} onChange={(value) => setRuleConfigField('maxSectorWeight', value)} error={ruleConfigValidation.fieldErrors.maxSectorWeight} />
-                  <InputCell label="買い許容個別比率(%)" value={ruleConfig.maxPositionBuyWeight} onChange={(value) => setRuleConfigField('maxPositionBuyWeight', value)} error={ruleConfigValidation.fieldErrors.maxPositionBuyWeight} />
-                  <InputCell label="買い許容セクター比率(%)" value={ruleConfig.maxSectorBuyWeight} onChange={(value) => setRuleConfigField('maxSectorBuyWeight', value)} error={ruleConfigValidation.fieldErrors.maxSectorBuyWeight} />
-                  <InputCell label="価格期限(日)" value={ruleConfig.priceMaxAgeDays} onChange={(value) => setRuleConfigField('priceMaxAgeDays', value)} error={ruleConfigValidation.fieldErrors.priceMaxAgeDays} />
-                  <InputCell label="財務期限(日)" value={ruleConfig.financialMaxAgeDays} onChange={(value) => setRuleConfigField('financialMaxAgeDays', value)} error={ruleConfigValidation.fieldErrors.financialMaxAgeDays} />
-                  <InputCell label="為替期限(日)" value={ruleConfig.fxMaxAgeDays} onChange={(value) => setRuleConfigField('fxMaxAgeDays', value)} error={ruleConfigValidation.fieldErrors.fxMaxAgeDays} />
-                  <div className="rounded-2xl border border-cyan-200 bg-white p-3 text-xs font-semibold text-cyan-800">
-                    <div>判定ルール: {ruleConfig.ruleVersion || '未設定'}</div>
-                    <div>局面: {ruleConfig.ruleRiskRegime}</div>
-                    <div>エラー: {ruleConfigValidation.errors.length}件</div>
-                  </div>
-                </div>
-                {ruleConfigValidation.errors.length > 0 && (
-                  <div className="mt-3 rounded-2xl border border-red-200 bg-red-50 p-3 text-xs font-bold text-red-700">
-                    {ruleConfigValidation.errors.slice(0, 6).map((error) => <div key={error}>・{error}</div>)}
-                  </div>
-                )}
-              </div>
-
 
               <div className="flex flex-wrap gap-2 text-xs text-slate-500">
                 <span className="rounded-full bg-slate-100 px-3 py-1">市場: {selectedMarket === 'ALL' ? '全市場' : selectedMarket}</span>
@@ -2346,7 +2348,6 @@ export default function PortfolioManagementDashboard() {
             <MetricCard label="MULTIPLE" value={portfolioSummary.decisionCounts.MULTIPLE_EVIDENCE_VALUES || 0} subLabel="採用値未指定" tone="amber" />
             <MetricCard label="MISMATCH" value={portfolioSummary.decisionCounts.MISMATCHED_EVIDENCE || 0} subLabel="証跡不一致" tone="red" />
             <MetricCard label="PROFILE" value={portfolioSummary.decisionCounts.PROFILE_DATA_REQUIRED || 0} subLabel="専用指標不足" tone="amber" />
-            <MetricCard label="RULE" value={portfolioSummary.decisionCounts.RULE_CONFIG_REQUIRED || 0} subLabel="ルール未確認" tone="amber" />
             <MetricCard label="STALE" value={portfolioSummary.decisionCounts.STALE_DATA || 0} subLabel="期限切れ" tone="amber" />
             <MetricCard label="SELL" value={portfolioSummary.decisionCounts.SELL || 0} subLabel="強制売却条件" tone="red" />
             <MetricCard label="REDUCE" value={portfolioSummary.decisionCounts.REDUCE || 0} subLabel="削減条件" tone="amber" />
@@ -2357,6 +2358,43 @@ export default function PortfolioManagementDashboard() {
             {portfolioSummary.byRuleProfile?.slice(0, 8).map((item) => (
               <MetricCard key={item.label} label={item.label} value={item.count} subLabel="ルールプロファイル" />
             ))}
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <MetricCard label="履歴保存回数" value={historyRuns.length} subLabel={latestHistoryRun ? String(latestHistoryRun.decisionDate).slice(0, 10) : '未保存'} tone="sky" />
+            <MetricCard label="履歴件数" value={decisionHistory.length} subLabel="銘柄別スナップショット" />
+            <MetricCard label="直近SELL" value={latestHistoryRun?.counts?.SELL || 0} subLabel="最新保存回" tone="red" />
+            <MetricCard label="直近REDUCE" value={latestHistoryRun?.counts?.REDUCE || 0} subLabel="最新保存回" tone="amber" />
+          </div>
+
+          <div className="bg-white/80 backdrop-blur-3xl border border-white/60 rounded-[32px] shadow-[0_20px_60px_rgba(15,23,42,0.08)] p-6">
+            <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+              <div>
+                <h2 className="text-2xl font-bold text-slate-900">判定履歴ログ</h2>
+                <p className="text-xs font-semibold text-slate-500">判定日時・入力値・ポートフォリオ比率・証跡をスナップショット保存。バックテスト用の土台。</p>
+              </div>
+              <div className="text-xs font-bold text-slate-500">履歴上限: 10,000件</div>
+            </div>
+            {historyRuns.length === 0 ? (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-800">履歴なし。上部の「現在判定を履歴保存」を押すと、全銘柄の現在判定を記録します。</div>
+            ) : (
+              <div className="grid gap-3 md:grid-cols-3">
+                {historyRuns.slice(0, 6).map((run) => (
+                  <div key={run.runId} className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-xs text-slate-700">
+                    <div className="font-bold text-slate-900">{String(run.decisionDate).slice(0, 19).replace('T', ' ')}</div>
+                    <div className="mt-1">件数: {run.total} / ルール: {run.ruleVersion}</div>
+                    <div className="mt-2 grid grid-cols-3 gap-1 font-semibold">
+                      <span>SELL {run.counts.SELL || 0}</span>
+                      <span>REDUCE {run.counts.REDUCE || 0}</span>
+                      <span>BUY {run.counts.BUY || 0}</span>
+                      <span>INVALID {run.counts.INVALID_DATA || 0}</span>
+                      <span>STALE {run.counts.STALE_DATA || 0}</span>
+                      <span>NO_DATA {run.counts.NO_DATA || 0}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -2561,6 +2599,7 @@ export default function PortfolioManagementDashboard() {
                           stock={stock}
                           holding={holdings[stock.code] || {}}
                           onHoldingChange={onHoldingChange}
+                          decisionHistory={stockDecisionHistoryMap.get(stock.code) || []}
                         />
                       ))}
                     </div>
