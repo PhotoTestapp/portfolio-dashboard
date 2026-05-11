@@ -13,6 +13,7 @@ const decisionLabels = {
   WEAK_EVIDENCE: 'WEAK_EVIDENCE',
   MISMATCHED_EVIDENCE: 'MISMATCHED_EVIDENCE',
   MULTIPLE_EVIDENCE_VALUES: 'MULTIPLE_EVIDENCE_VALUES',
+  PROFILE_DATA_REQUIRED: 'PROFILE_DATA_REQUIRED',
   STALE_DATA: 'STALE_DATA',
   BUY: 'BUY',
   HOLD: 'HOLD',
@@ -28,6 +29,7 @@ const decisionTone = {
   WEAK_EVIDENCE: 'bg-fuchsia-50 border-fuchsia-300 text-fuchsia-800',
   MISMATCHED_EVIDENCE: 'bg-rose-50 border-rose-300 text-rose-800',
   MULTIPLE_EVIDENCE_VALUES: 'bg-pink-50 border-pink-300 text-pink-800',
+  PROFILE_DATA_REQUIRED: 'bg-indigo-50 border-indigo-300 text-indigo-800',
   STALE_DATA: 'bg-orange-50 border-orange-300 text-orange-800',
   BUY: 'bg-emerald-50 border-emerald-300 text-emerald-800',
   HOLD: 'bg-sky-50 border-sky-300 text-sky-800',
@@ -57,6 +59,25 @@ const holdingFields = [
   'debtToEquity',
   'dividendCut',
   'ruleProfile',
+  'bankCapitalRatio',
+  'bankNplRatio',
+  'bankCreditCostRatio',
+  'bankNetInterestMargin',
+  'reitLtv',
+  'reitOccupancyRate',
+  'reitNavRatio',
+  'reitFfoYoY',
+  'utilityCapexToSales',
+  'utilityFuelCostYoY',
+  'cyclicalMarketIndexYoY',
+  'inventoryYoY',
+  'capacityUtilization',
+  'growthFcfYoY',
+  'operatingMargin',
+  'rdToSales',
+  'pipelineProgress',
+  'financialAumYoY',
+  'financialCreditCostRatio',
   'priceUpdatedAt',
   'financialUpdatedAt',
   'sourceName',
@@ -74,7 +95,7 @@ const holdingFields = [
 
 const dateFields = ['priceUpdatedAt', 'financialUpdatedAt', 'confirmedAt']
 const evidenceFields = ['sourceName', 'sourceUrl', 'fiscalPeriod', 'dataType', 'confirmedAt', 'sourcePage', 'sourceQuote', 'selectedEvidenceValue', 'sourceMetricName', 'sourceUnit', 'evidenceMemo']
-const numericFields = holdingFields.filter((field) => field !== 'dividendCut' && !dateFields.includes(field) && !evidenceFields.includes(field))
+const numericFields = holdingFields.filter((field) => field !== 'dividendCut' && field !== 'ruleProfile' && !dateFields.includes(field) && !evidenceFields.includes(field))
 const nonNegativeFields = ['shares', 'averagePrice', 'currentPrice', 'annualDividend', 'payoutRatio', 'equityRatio', 'debtToEquity']
 const signedFields = ['operatingCashFlowYoY', 'revenueYoY', 'epsYoY']
 
@@ -89,6 +110,25 @@ const validationRules = {
   epsYoY: { label: 'EPS前年比', min: -500, max: 500, minExclusive: false },
   equityRatio: { label: '自己資本比率', min: 0, max: 100, minExclusive: false },
   debtToEquity: { label: '有利子負債倍率', min: 0, max: 100, minExclusive: false },
+  bankCapitalRatio: { label: '銀行自己資本比率', min: 0, max: 30, minExclusive: false },
+  bankNplRatio: { label: '不良債権比率', min: 0, max: 20, minExclusive: false },
+  bankCreditCostRatio: { label: '与信費用率', min: 0, max: 10, minExclusive: false },
+  bankNetInterestMargin: { label: '純金利マージン', min: -5, max: 10, minExclusive: false },
+  reitLtv: { label: 'REIT LTV', min: 0, max: 100, minExclusive: false },
+  reitOccupancyRate: { label: 'REIT 稼働率', min: 0, max: 100, minExclusive: false },
+  reitNavRatio: { label: 'NAV倍率', min: 0, max: 5, minExclusive: false },
+  reitFfoYoY: { label: 'FFO前年比', min: -500, max: 500, minExclusive: false },
+  utilityCapexToSales: { label: '設備投資/売上比率', min: 0, max: 200, minExclusive: false },
+  utilityFuelCostYoY: { label: '燃料費前年比', min: -500, max: 500, minExclusive: false },
+  cyclicalMarketIndexYoY: { label: '市況指数前年比', min: -500, max: 500, minExclusive: false },
+  inventoryYoY: { label: '在庫前年比', min: -500, max: 500, minExclusive: false },
+  capacityUtilization: { label: '設備稼働率', min: 0, max: 100, minExclusive: false },
+  growthFcfYoY: { label: 'FCF前年比', min: -500, max: 500, minExclusive: false },
+  operatingMargin: { label: '営業利益率', min: -100, max: 100, minExclusive: false },
+  rdToSales: { label: '研究開発費率', min: 0, max: 100, minExclusive: false },
+  pipelineProgress: { label: 'パイプライン進捗率', min: 0, max: 100, minExclusive: false },
+  financialAumYoY: { label: '運用資産前年比', min: -500, max: 500, minExclusive: false },
+  financialCreditCostRatio: { label: '金融与信費用率', min: 0, max: 10, minExclusive: false },
 }
 
 const usdJpyRule = { label: 'USD/JPY', min: 50, max: 300, minExclusive: false }
@@ -116,6 +156,53 @@ const ruleProfileOptions = [
   { value: 'FINANCIAL', label: 'FINANCIAL / 証券・リース・金融' },
 ]
 const allowedRuleProfiles = ruleProfileOptions.map((option) => option.value)
+
+const profileMetricDefinitions = {
+  BANK: [
+    { field: 'bankCapitalRatio', label: '銀行自己資本比率(%)', placeholder: '例: 10.5' },
+    { field: 'bankNplRatio', label: '不良債権比率(%)', placeholder: '例: 1.2' },
+    { field: 'bankCreditCostRatio', label: '与信費用率(%)', placeholder: '例: 0.4' },
+    { field: 'bankNetInterestMargin', label: '純金利マージン(%)', placeholder: '例: 1.1', signed: true },
+  ],
+  REIT: [
+    { field: 'reitLtv', label: 'LTV(%)', placeholder: '例: 45' },
+    { field: 'reitOccupancyRate', label: '稼働率(%)', placeholder: '例: 98' },
+    { field: 'reitNavRatio', label: 'NAV倍率(倍)', placeholder: '例: 1.05' },
+    { field: 'reitFfoYoY', label: 'FFO前年比(%)', placeholder: '例: 3', signed: true },
+  ],
+  UTILITY: [
+    { field: 'utilityCapexToSales', label: '設備投資/売上(%)', placeholder: '例: 35' },
+    { field: 'utilityFuelCostYoY', label: '燃料費前年比(%)', placeholder: '例: 12', signed: true },
+  ],
+  CYCLICAL: [
+    { field: 'cyclicalMarketIndexYoY', label: '市況指数前年比(%)', placeholder: '例: -8', signed: true },
+    { field: 'inventoryYoY', label: '在庫前年比(%)', placeholder: '例: 15', signed: true },
+    { field: 'capacityUtilization', label: '設備稼働率(%)', placeholder: '例: 78' },
+  ],
+  GROWTH_TECH: [
+    { field: 'growthFcfYoY', label: 'FCF前年比(%)', placeholder: '例: 18', signed: true },
+    { field: 'operatingMargin', label: '営業利益率(%)', placeholder: '例: 25', signed: true },
+    { field: 'rdToSales', label: 'R&D/売上(%)', placeholder: '例: 14' },
+  ],
+  HEALTHCARE: [
+    { field: 'rdToSales', label: 'R&D/売上(%)', placeholder: '例: 18' },
+    { field: 'pipelineProgress', label: 'パイプライン進捗率(%)', placeholder: '例: 60' },
+  ],
+  FINANCIAL: [
+    { field: 'financialAumYoY', label: '運用資産前年比(%)', placeholder: '例: 6', signed: true },
+    { field: 'financialCreditCostRatio', label: '金融与信費用率(%)', placeholder: '例: 0.5' },
+  ],
+  GENERAL: [],
+}
+
+const getProfileMetrics = (profile) => profileMetricDefinitions[profile] || []
+
+const getProfileDataRequiredReasons = (stock) => {
+  const metrics = getProfileMetrics(stock.ruleProfile)
+  return metrics
+    .filter((metric) => stock[metric.field] === null)
+    .map((metric) => `${stock.ruleProfile}: 専用指標「${metric.label.replace(/\(.+?\)/g, '')}」が未入力`)
+}
 
 const inferRuleProfile = (stock) => {
   const text = `${stock.code} ${stock.name} ${stock.market} ${stock.group} ${stock.business} ${(stock.tags || []).join(' ')}`
@@ -666,19 +753,30 @@ const getSellReasonsByProfile = (stock) => {
 
   switch (profile) {
     case 'BANK':
+      if (stock.bankCapitalRatio < 8) reasons.push('BANK: 銀行自己資本比率8%未満')
+      if (stock.bankNplRatio >= 5) reasons.push('BANK: 不良債権比率5%以上')
+      if (stock.bankCreditCostRatio >= 3) reasons.push('BANK: 与信費用率3%以上')
+      if (stock.bankNetInterestMargin < 0) reasons.push('BANK: 純金利マージン0%未満')
       if (stock.payoutRatio >= 100) reasons.push('BANK: 配当性向100%以上')
       if (stock.epsYoY <= -40) reasons.push('BANK: EPS前年比-40%以下')
       break
     case 'REIT':
-      // REITは通常株と利益・分配金の構造が異なるため、配当性向100%以上・EPS単独悪化は即SELLにしない。
+      if (stock.reitLtv >= 60) reasons.push('REIT: LTV60%以上')
+      if (stock.reitOccupancyRate < 90) reasons.push('REIT: 稼働率90%未満')
+      if (stock.reitFfoYoY <= -30) reasons.push('REIT: FFO前年比-30%以下')
       break
     case 'UTILITY':
       if (stock.operatingCashFlowYoY <= -40) reasons.push('UTILITY: 営業CF前年比-40%以下')
+      if (stock.utilityFuelCostYoY >= 100 && stock.operatingCashFlowYoY <= -20) reasons.push('UTILITY: 燃料費前年比100%以上かつ営業CF悪化')
       break
     case 'CYCLICAL':
       if (stock.operatingCashFlowYoY <= -30) reasons.push('CYCLICAL: 営業CF前年比-30%以下')
+      if (stock.cyclicalMarketIndexYoY <= -30 && stock.inventoryYoY >= 30) reasons.push('CYCLICAL: 市況指数-30%以下かつ在庫+30%以上')
+      if (stock.capacityUtilization < 60) reasons.push('CYCLICAL: 設備稼働率60%未満')
       break
     case 'GROWTH_TECH':
+      if (stock.growthFcfYoY <= -50) reasons.push('GROWTH_TECH: FCF前年比-50%以下')
+      if (stock.operatingMargin <= -20) reasons.push('GROWTH_TECH: 営業利益率-20%以下')
       if (stock.operatingCashFlowYoY <= -40) reasons.push('GROWTH_TECH: 営業CF前年比-40%以下')
       if (stock.revenueYoY <= -20) reasons.push('GROWTH_TECH: 売上前年比-20%以下')
       break
@@ -686,6 +784,8 @@ const getSellReasonsByProfile = (stock) => {
       if (stock.operatingCashFlowYoY <= -30) reasons.push('HEALTHCARE: 営業CF前年比-30%以下')
       break
     case 'FINANCIAL':
+      if (stock.financialAumYoY <= -25) reasons.push('FINANCIAL: 運用資産前年比-25%以下')
+      if (stock.financialCreditCostRatio >= 3) reasons.push('FINANCIAL: 金融与信費用率3%以上')
       if (stock.payoutRatio >= 100) reasons.push('FINANCIAL: 配当性向100%以上')
       if (stock.epsYoY <= -40) reasons.push('FINANCIAL: EPS前年比-40%以下')
       break
@@ -708,10 +808,15 @@ const getReduceReasonsByProfile = (stock) => {
 
   switch (profile) {
     case 'BANK':
+      if (stock.bankCapitalRatio < 9) reasons.push('BANK: 銀行自己資本比率9%未満')
+      if (stock.bankNplRatio >= 3) reasons.push('BANK: 不良債権比率3%以上')
       if (stock.payoutRatio >= 85) reasons.push('BANK: 配当性向85%以上')
       if (stock.epsYoY <= -25) reasons.push('BANK: EPS前年比-25%以下')
       break
     case 'REIT':
+      if (stock.reitLtv >= 55) reasons.push('REIT: LTV55%以上')
+      if (stock.reitOccupancyRate < 95) reasons.push('REIT: 稼働率95%未満')
+      if (stock.reitNavRatio >= 1.3) reasons.push('REIT: NAV倍率1.3倍以上')
       if (stock.payoutRatio >= 120) reasons.push('REIT: 分配金余力確認が必要（配当性向120%以上）')
       break
     case 'UTILITY':
@@ -719,14 +824,19 @@ const getReduceReasonsByProfile = (stock) => {
       break
     case 'CYCLICAL':
       if (stock.operatingCashFlowYoY <= -15) reasons.push('CYCLICAL: 営業CF前年比-15%以下')
+      if (stock.cyclicalMarketIndexYoY <= -15) reasons.push('CYCLICAL: 市況指数前年比-15%以下')
+      if (stock.inventoryYoY >= 20) reasons.push('CYCLICAL: 在庫前年比20%以上')
       break
     case 'GROWTH_TECH':
       if (stock.revenueYoY < 5) reasons.push('GROWTH_TECH: 売上前年比5%未満')
+      if (stock.growthFcfYoY < 0) reasons.push('GROWTH_TECH: FCF前年比0%未満')
+      if (stock.operatingMargin < 10) reasons.push('GROWTH_TECH: 営業利益率10%未満')
       if (stock.operatingCashFlowYoY < 0) reasons.push('GROWTH_TECH: 営業CF前年比0%未満')
       break
     case 'HEALTHCARE':
       if (stock.revenueYoY <= -10) reasons.push('HEALTHCARE: 売上前年比-10%以下')
       if (stock.operatingCashFlowYoY <= -20) reasons.push('HEALTHCARE: 営業CF前年比-20%以下')
+      if (stock.pipelineProgress < 30) reasons.push('HEALTHCARE: パイプライン進捗率30%未満')
       break
     case 'FINANCIAL':
       if (stock.payoutRatio >= 85) reasons.push('FINANCIAL: 配当性向85%以上')
@@ -750,6 +860,9 @@ const getBuyChecksByProfile = (stock) => {
   switch (profile) {
     case 'BANK':
       return [
+        { passed: stock.bankCapitalRatio >= 9, reason: 'BANK: 銀行自己資本比率9%以上' },
+        { passed: stock.bankNplRatio < 3, reason: 'BANK: 不良債権比率3%未満' },
+        { passed: stock.bankCreditCostRatio < 1, reason: 'BANK: 与信費用率1%未満' },
         { passed: stock.payoutRatio < 75, reason: 'BANK: 配当性向75%未満' },
         { passed: stock.epsYoY >= 0, reason: 'BANK: EPS前年比0%以上' },
         { passed: stock.dividendYield >= 3, reason: 'BANK: 配当利回り3%以上' },
@@ -757,6 +870,9 @@ const getBuyChecksByProfile = (stock) => {
       ]
     case 'REIT':
       return [
+        { passed: stock.reitLtv < 50, reason: 'REIT: LTV50%未満' },
+        { passed: stock.reitOccupancyRate >= 95, reason: 'REIT: 稼働率95%以上' },
+        { passed: stock.reitFfoYoY >= 0, reason: 'REIT: FFO前年比0%以上' },
         { passed: stock.dividendYield >= 4, reason: 'REIT: 分配金利回り4%以上' },
         { passed: stock.positionWeight < 5, reason: '個別銘柄比率5%未満' },
         { passed: stock.sectorWeight < 20, reason: '同一セクター比率20%未満' },
@@ -764,12 +880,17 @@ const getBuyChecksByProfile = (stock) => {
       ]
     case 'UTILITY':
       return [
+        { passed: stock.utilityFuelCostYoY <= 30, reason: 'UTILITY: 燃料費前年比30%以下' },
+        { passed: stock.utilityCapexToSales <= 80, reason: 'UTILITY: 設備投資/売上80%以下' },
         { passed: stock.operatingCashFlowYoY >= -10, reason: 'UTILITY: 営業CF前年比-10%以上' },
         { passed: stock.dividendYield >= 3, reason: 'UTILITY: 配当利回り3%以上' },
         ...common,
       ]
     case 'CYCLICAL':
       return [
+        { passed: stock.cyclicalMarketIndexYoY >= 0, reason: 'CYCLICAL: 市況指数前年比0%以上' },
+        { passed: stock.inventoryYoY <= 10, reason: 'CYCLICAL: 在庫前年比10%以下' },
+        { passed: stock.capacityUtilization >= 70, reason: 'CYCLICAL: 設備稼働率70%以上' },
         { passed: stock.operatingCashFlowYoY >= 0, reason: 'CYCLICAL: 営業CF前年比0%以上' },
         { passed: stock.payoutRatio < 70, reason: 'CYCLICAL: 配当性向70%未満' },
         ...common,
@@ -777,6 +898,8 @@ const getBuyChecksByProfile = (stock) => {
     case 'GROWTH_TECH':
       return [
         { passed: stock.revenueYoY >= 5, reason: 'GROWTH_TECH: 売上前年比5%以上' },
+        { passed: stock.growthFcfYoY >= 0, reason: 'GROWTH_TECH: FCF前年比0%以上' },
+        { passed: stock.operatingMargin >= 10, reason: 'GROWTH_TECH: 営業利益率10%以上' },
         { passed: stock.epsYoY >= 0, reason: 'GROWTH_TECH: EPS前年比0%以上' },
         { passed: stock.operatingCashFlowYoY >= 0, reason: 'GROWTH_TECH: 営業CF前年比0%以上' },
         { passed: stock.positionWeight < 5, reason: '個別銘柄比率5%未満' },
@@ -784,6 +907,8 @@ const getBuyChecksByProfile = (stock) => {
       ]
     case 'HEALTHCARE':
       return [
+        { passed: stock.rdToSales >= 8, reason: 'HEALTHCARE: R&D/売上8%以上' },
+        { passed: stock.pipelineProgress >= 40, reason: 'HEALTHCARE: パイプライン進捗率40%以上' },
         { passed: stock.operatingCashFlowYoY >= 0, reason: 'HEALTHCARE: 営業CF前年比0%以上' },
         { passed: stock.revenueYoY >= -5, reason: 'HEALTHCARE: 売上前年比-5%以上' },
         { passed: stock.payoutRatio < 80, reason: 'HEALTHCARE: 配当性向80%未満' },
@@ -791,6 +916,8 @@ const getBuyChecksByProfile = (stock) => {
       ]
     case 'FINANCIAL':
       return [
+        { passed: stock.financialAumYoY >= 0, reason: 'FINANCIAL: 運用資産前年比0%以上' },
+        { passed: stock.financialCreditCostRatio < 1, reason: 'FINANCIAL: 金融与信費用率1%未満' },
         { passed: stock.payoutRatio < 75, reason: 'FINANCIAL: 配当性向75%未満' },
         { passed: stock.epsYoY >= 0, reason: 'FINANCIAL: EPS前年比0%以上' },
         { passed: stock.dividendYield >= 3, reason: 'FINANCIAL: 配当利回り3%以上' },
@@ -869,6 +996,11 @@ const judgeStock = (stock) => {
   }
 
   const profile = stock.ruleProfile || 'GENERAL'
+  const profileDataReasons = getProfileDataRequiredReasons(stock)
+  if (profileDataReasons.length > 0) {
+    return { decision: 'PROFILE_DATA_REQUIRED', severity: 'HIGH', reasons: [`判定プロファイル: ${profile}`, ...profileDataReasons] }
+  }
+
   const sellReasons = getSellReasonsByProfile(stock)
 
   if (sellReasons.length > 0) {
@@ -1049,6 +1181,31 @@ function DecisionBadge({ result }) {
   )
 }
 
+
+function ProfileMetricInputs({ profile, holding, fieldErrors, updateField }) {
+  const metrics = getProfileMetrics(profile)
+  if (metrics.length === 0) return null
+  return (
+    <div className="mt-3 rounded-2xl border border-indigo-100 bg-indigo-50/60 p-3">
+      <div className="mb-2 text-xs font-bold text-indigo-800">プロファイル専用指標: {profile}</div>
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+        {metrics.map((metric) => (
+          <InputCell
+            key={metric.field}
+            label={metric.label}
+            value={holding[metric.field]}
+            onChange={(value) => updateField(metric.field, value)}
+            placeholder={metric.placeholder}
+            signed={metric.signed}
+            error={fieldErrors[metric.field]}
+          />
+        ))}
+      </div>
+      <div className="mt-2 text-[11px] font-semibold text-indigo-700">専用指標が未入力の場合、PROFILE_DATA_REQUIREDで通常判定を停止します。</div>
+    </div>
+  )
+}
+
 function StockCard({ stock, holding, onHoldingChange }) {
   const result = stock.decisionResult || { decision: 'NO_DATA', severity: 'HIGH', reasons: ['判定不可'] }
   const fieldErrors = { ...(stock.validationFieldErrors || {}), ...(stock.verificationFieldErrors || {}), ...(stock.evidenceFieldErrors || {}) }
@@ -1110,6 +1267,8 @@ function StockCard({ stock, holding, onHoldingChange }) {
         <InputCell label="有利子負債倍率(倍)" value={holding.debtToEquity} onChange={(value) => updateField('debtToEquity', value)} placeholder="例: 1.8" error={fieldErrors.debtToEquity} />
         <RuleProfileSelectCell label="判定プロファイル" value={holding.ruleProfile || stock.ruleProfile} onChange={(value) => updateField('ruleProfile', value)} />
       </div>
+
+      <ProfileMetricInputs profile={stock.ruleProfile} holding={holding} fieldErrors={fieldErrors} updateField={updateField} />
 
       <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-2">
         <DateInputCell label="価格更新日" value={holding.priceUpdatedAt} onChange={(value) => updateField('priceUpdatedAt', value)} error={fieldErrors.priceUpdatedAt} />
@@ -1316,6 +1475,25 @@ export default function PortfolioManagementDashboard() {
       const epsYoY = toNumber(holding.epsYoY)
       const equityRatio = toNumber(holding.equityRatio)
       const debtToEquity = toNumber(holding.debtToEquity)
+      const bankCapitalRatio = toNumber(holding.bankCapitalRatio)
+      const bankNplRatio = toNumber(holding.bankNplRatio)
+      const bankCreditCostRatio = toNumber(holding.bankCreditCostRatio)
+      const bankNetInterestMargin = toNumber(holding.bankNetInterestMargin)
+      const reitLtv = toNumber(holding.reitLtv)
+      const reitOccupancyRate = toNumber(holding.reitOccupancyRate)
+      const reitNavRatio = toNumber(holding.reitNavRatio)
+      const reitFfoYoY = toNumber(holding.reitFfoYoY)
+      const utilityCapexToSales = toNumber(holding.utilityCapexToSales)
+      const utilityFuelCostYoY = toNumber(holding.utilityFuelCostYoY)
+      const cyclicalMarketIndexYoY = toNumber(holding.cyclicalMarketIndexYoY)
+      const inventoryYoY = toNumber(holding.inventoryYoY)
+      const capacityUtilization = toNumber(holding.capacityUtilization)
+      const growthFcfYoY = toNumber(holding.growthFcfYoY)
+      const operatingMargin = toNumber(holding.operatingMargin)
+      const rdToSales = toNumber(holding.rdToSales)
+      const pipelineProgress = toNumber(holding.pipelineProgress)
+      const financialAumYoY = toNumber(holding.financialAumYoY)
+      const financialCreditCostRatio = toNumber(holding.financialCreditCostRatio)
       const dividendCut = toBooleanOrNull(holding.dividendCut)
       const fallbackRuleProfile = inferRuleProfile(stock)
       const ruleProfile = allowedRuleProfiles.includes(holding.ruleProfile) ? holding.ruleProfile : fallbackRuleProfile
@@ -1351,6 +1529,25 @@ export default function PortfolioManagementDashboard() {
         epsYoY,
         equityRatio,
         debtToEquity,
+        bankCapitalRatio,
+        bankNplRatio,
+        bankCreditCostRatio,
+        bankNetInterestMargin,
+        reitLtv,
+        reitOccupancyRate,
+        reitNavRatio,
+        reitFfoYoY,
+        utilityCapexToSales,
+        utilityFuelCostYoY,
+        cyclicalMarketIndexYoY,
+        inventoryYoY,
+        capacityUtilization,
+        growthFcfYoY,
+        operatingMargin,
+        rdToSales,
+        pipelineProgress,
+        financialAumYoY,
+        financialCreditCostRatio,
         dividendCut,
         ruleProfile,
         priceUpdatedAt,
@@ -1518,7 +1715,7 @@ export default function PortfolioManagementDashboard() {
     const quoteMissingStocks = enrichedStocks.filter((stock) => stock.evidenceFieldErrors?.sourceQuote)
     const pageMissingStocks = enrichedStocks.filter((stock) => stock.evidenceFieldErrors?.sourcePage)
     const metricMissingStocks = enrichedStocks.filter((stock) => stock.evidenceFieldErrors?.sourceMetricName)
-    const criticalStocks = enrichedStocks.filter((stock) => ['INVALID_DATA', 'UNVERIFIED_DATA', 'WEAK_EVIDENCE', 'MULTIPLE_EVIDENCE_VALUES', 'MISMATCHED_EVIDENCE', 'STALE_DATA', 'SELL', 'REDUCE', 'NO_DATA'].includes(stock.decisionResult?.decision))
+    const criticalStocks = enrichedStocks.filter((stock) => ['INVALID_DATA', 'UNVERIFIED_DATA', 'WEAK_EVIDENCE', 'MULTIPLE_EVIDENCE_VALUES', 'MISMATCHED_EVIDENCE', 'PROFILE_DATA_REQUIRED', 'STALE_DATA', 'SELL', 'REDUCE', 'NO_DATA'].includes(stock.decisionResult?.decision))
 
     return {
       positionedCount: positionedStocks.length,
@@ -1669,6 +1866,7 @@ export default function PortfolioManagementDashboard() {
       'code', 'name', 'market', 'group', 'currency',
       'shares', 'averagePrice', 'currentPrice', 'annualDividend',
       'payoutRatio', 'operatingCashFlowYoY', 'revenueYoY', 'epsYoY', 'equityRatio', 'debtToEquity', 'dividendCut', 'ruleProfile',
+      'bankCapitalRatio', 'bankNplRatio', 'bankCreditCostRatio', 'bankNetInterestMargin', 'reitLtv', 'reitOccupancyRate', 'reitNavRatio', 'reitFfoYoY', 'utilityCapexToSales', 'utilityFuelCostYoY', 'cyclicalMarketIndexYoY', 'inventoryYoY', 'capacityUtilization', 'growthFcfYoY', 'operatingMargin', 'rdToSales', 'pipelineProgress', 'financialAumYoY', 'financialCreditCostRatio',
       'priceUpdatedAt', 'financialUpdatedAt', 'fxUpdatedAt',
       'sourceName', 'sourceUrl', 'fiscalPeriod', 'dataType', 'confirmedAt',
       'sourcePage', 'sourceQuote', 'selectedEvidenceValue', 'sourceMetricName', 'sourceUnit', 'evidenceMemo',
@@ -1694,6 +1892,25 @@ export default function PortfolioManagementDashboard() {
       stock.holding.debtToEquity || '',
       stock.holding.dividendCut || '',
       stock.ruleProfile || '',
+      stock.holding.bankCapitalRatio || '',
+      stock.holding.bankNplRatio || '',
+      stock.holding.bankCreditCostRatio || '',
+      stock.holding.bankNetInterestMargin || '',
+      stock.holding.reitLtv || '',
+      stock.holding.reitOccupancyRate || '',
+      stock.holding.reitNavRatio || '',
+      stock.holding.reitFfoYoY || '',
+      stock.holding.utilityCapexToSales || '',
+      stock.holding.utilityFuelCostYoY || '',
+      stock.holding.cyclicalMarketIndexYoY || '',
+      stock.holding.inventoryYoY || '',
+      stock.holding.capacityUtilization || '',
+      stock.holding.growthFcfYoY || '',
+      stock.holding.operatingMargin || '',
+      stock.holding.rdToSales || '',
+      stock.holding.pipelineProgress || '',
+      stock.holding.financialAumYoY || '',
+      stock.holding.financialCreditCostRatio || '',
       stock.holding.priceUpdatedAt || '',
       stock.holding.financialUpdatedAt || '',
       stock.fxUpdatedAt || '',
@@ -1952,6 +2169,7 @@ export default function PortfolioManagementDashboard() {
             <MetricCard label="WEAK" value={portfolioSummary.decisionCounts.WEAK_EVIDENCE || 0} subLabel="証跡不足" tone="amber" />
             <MetricCard label="MULTIPLE" value={portfolioSummary.decisionCounts.MULTIPLE_EVIDENCE_VALUES || 0} subLabel="採用値未指定" tone="amber" />
             <MetricCard label="MISMATCH" value={portfolioSummary.decisionCounts.MISMATCHED_EVIDENCE || 0} subLabel="証跡不一致" tone="red" />
+            <MetricCard label="PROFILE" value={portfolioSummary.decisionCounts.PROFILE_DATA_REQUIRED || 0} subLabel="専用指標不足" tone="amber" />
             <MetricCard label="STALE" value={portfolioSummary.decisionCounts.STALE_DATA || 0} subLabel="期限切れ" tone="amber" />
             <MetricCard label="SELL" value={portfolioSummary.decisionCounts.SELL || 0} subLabel="強制売却条件" tone="red" />
             <MetricCard label="REDUCE" value={portfolioSummary.decisionCounts.REDUCE || 0} subLabel="削減条件" tone="amber" />
@@ -2036,7 +2254,7 @@ export default function PortfolioManagementDashboard() {
                 </div>
               </div>
               <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm font-semibold text-slate-700">
-                入力できるのは数値・事実のみ。判定優先順位は INVALID_DATA → UNVERIFIED_DATA → WEAK_EVIDENCE → MULTIPLE_EVIDENCE_VALUES → MISMATCHED_EVIDENCE → STALE_DATA → NO_DATA → SELL → REDUCE → BUY → HOLD → WATCH。SELL/REDUCE/BUYは判定プロファイル別に分岐し、人間による上書きは不可。
+                入力できるのは数値・事実のみ。判定優先順位は INVALID_DATA → UNVERIFIED_DATA → WEAK_EVIDENCE → MULTIPLE_EVIDENCE_VALUES → MISMATCHED_EVIDENCE → PROFILE_DATA_REQUIRED → STALE_DATA → NO_DATA → SELL → REDUCE → BUY → HOLD → WATCH。SELL/REDUCE/BUYは判定プロファイル別に分岐し、人間による上書きは不可。
               </div>
             </div>
 
