@@ -4,10 +4,12 @@ import { conditionDefinitions, conditionLabels, normalizeStocks } from './utils/
 
 const marketOrder = ['日本株', '米国株']
 const STORAGE_KEY = 'portfolio-dashboard-holdings-v1'
+const SETTINGS_KEY = 'portfolio-dashboard-settings-v1'
 const DEFAULT_USD_JPY = 155
 
 const decisionLabels = {
   INVALID_DATA: 'INVALID_DATA',
+  STALE_DATA: 'STALE_DATA',
   BUY: 'BUY',
   HOLD: 'HOLD',
   WATCH: 'WATCH',
@@ -18,6 +20,7 @@ const decisionLabels = {
 
 const decisionTone = {
   INVALID_DATA: 'bg-red-100 border-red-400 text-red-900',
+  STALE_DATA: 'bg-orange-50 border-orange-300 text-orange-800',
   BUY: 'bg-emerald-50 border-emerald-300 text-emerald-800',
   HOLD: 'bg-sky-50 border-sky-300 text-sky-800',
   WATCH: 'bg-slate-50 border-slate-300 text-slate-700',
@@ -45,9 +48,12 @@ const holdingFields = [
   'equityRatio',
   'debtToEquity',
   'dividendCut',
+  'priceUpdatedAt',
+  'financialUpdatedAt',
 ]
 
-const numericFields = holdingFields.filter((field) => field !== 'dividendCut')
+const dateFields = ['priceUpdatedAt', 'financialUpdatedAt']
+const numericFields = holdingFields.filter((field) => field !== 'dividendCut' && !dateFields.includes(field))
 const nonNegativeFields = ['shares', 'averagePrice', 'currentPrice', 'annualDividend', 'payoutRatio', 'equityRatio', 'debtToEquity']
 const signedFields = ['operatingCashFlowYoY', 'revenueYoY', 'epsYoY']
 
@@ -65,6 +71,36 @@ const validationRules = {
 }
 
 const usdJpyRule = { label: 'USD/JPY', min: 50, max: 300, minExclusive: false }
+const staleRules = {
+  price: { label: '現在価格', maxAgeDays: 7 },
+  financial: { label: '財務データ', maxAgeDays: 100 },
+  fx: { label: 'USD/JPY', maxAgeDays: 7 },
+}
+
+const todayInputDate = () => new Date().toISOString().slice(0, 10)
+
+const parseInputDate = (value) => {
+  if (!value) return null
+  const date = new Date(`${value}T00:00:00`)
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+const daysSince = (value) => {
+  const date = parseInputDate(value)
+  if (!date) return null
+  const today = parseInputDate(todayInputDate())
+  return Math.floor((today.getTime() - date.getTime()) / 86400000)
+}
+
+const validateDateValue = (label, value) => {
+  if (value === '' || value === null || value === undefined) return null
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value))) return `${label}がYYYY-MM-DD形式ではありません`
+  const age = daysSince(value)
+  if (age === null) return `${label}が有効な日付ではありません`
+  if (age < 0) return `${label}が未来日です`
+  return null
+}
+
 
 const toNumber = (value) => {
   if (value === '' || value === null || value === undefined) return null
@@ -189,7 +225,7 @@ const validateNumericValue = (field, value, customRule = null) => {
 
 const isImportableNumberForField = (field, value) => validateNumericValue(field, value) === null
 
-const validateHoldingInput = (holding, stock, usdJpyInputValue) => {
+const validateHoldingInput = (holding, stock, usdJpyInputValue, fxUpdatedAtValue) => {
   const errors = []
   const fieldErrors = {}
 
@@ -208,11 +244,28 @@ const validateHoldingInput = (holding, stock, usdJpyInputValue) => {
     errors.push(error)
   }
 
+  const priceDateError = validateDateValue('価格更新日', holding?.priceUpdatedAt)
+  if (priceDateError) {
+    fieldErrors.priceUpdatedAt = priceDateError
+    errors.push(priceDateError)
+  }
+
+  const financialDateError = validateDateValue('財務更新日', holding?.financialUpdatedAt)
+  if (financialDateError) {
+    fieldErrors.financialUpdatedAt = financialDateError
+    errors.push(financialDateError)
+  }
+
   if (stock?.currency === 'USD') {
     const error = validateNumericValue('usdJpy', usdJpyInputValue, usdJpyRule)
     if (error) {
       fieldErrors.usdJpy = error
       errors.push(error)
+    }
+    const fxDateError = validateDateValue('USD/JPY更新日', fxUpdatedAtValue)
+    if (fxDateError) {
+      fieldErrors.fxUpdatedAt = fxDateError
+      errors.push(fxDateError)
     }
   }
 
@@ -225,11 +278,13 @@ const normalizeImportedHolding = (raw) => {
     normalized[field] = normalizeImportNumber(raw[field])
   }
   normalized.dividendCut = normalizeBoolean(raw.dividendCut)
+  normalized.priceUpdatedAt = String(raw.priceUpdatedAt || '').trim()
+  normalized.financialUpdatedAt = String(raw.financialUpdatedAt || '').trim()
   return normalized
 }
 
 const isValidImportedHolding = (holding) => {
-  return numericFields.every((field) => isImportableNumberForField(field, holding[field])) && ['', 'true', 'false'].includes(holding.dividendCut)
+  return numericFields.every((field) => isImportableNumberForField(field, holding[field])) && ['', 'true', 'false'].includes(holding.dividendCut) && dateFields.every((field) => validateDateValue(field === 'priceUpdatedAt' ? '価格更新日' : '財務更新日', holding[field]) === null)
 }
 
 const downloadTextFile = (content, filename, type) => {
@@ -257,12 +312,46 @@ const getMissingRequiredData = (stock) => {
   return missing
 }
 
+const getStaleDataReasons = (stock) => {
+  const reasons = []
+
+  if (stock.currentPrice !== null) {
+    const age = daysSince(stock.priceUpdatedAt)
+    if (age === null) reasons.push('価格更新日が未入力')
+    else if (age > staleRules.price.maxAgeDays) reasons.push(`現在価格が${age}日前のデータ（期限${staleRules.price.maxAgeDays}日）`)
+  }
+
+  const hasFinancialData = [stock.payoutRatio, stock.operatingCashFlowYoY, stock.revenueYoY, stock.epsYoY, stock.equityRatio, stock.debtToEquity, stock.dividendCut].some((value) => value !== null)
+  if (hasFinancialData) {
+    const age = daysSince(stock.financialUpdatedAt)
+    if (age === null) reasons.push('財務更新日が未入力')
+    else if (age > staleRules.financial.maxAgeDays) reasons.push(`財務データが${age}日前のデータ（期限${staleRules.financial.maxAgeDays}日）`)
+  }
+
+  if (stock.currency === 'USD' && (stock.currentPrice !== null || stock.hasPosition)) {
+    const age = daysSince(stock.fxUpdatedAt)
+    if (age === null) reasons.push('USD/JPY更新日が未入力')
+    else if (age > staleRules.fx.maxAgeDays) reasons.push(`USD/JPYが${age}日前のデータ（期限${staleRules.fx.maxAgeDays}日）`)
+  }
+
+  return [...new Set(reasons)]
+}
+
 const judgeStock = (stock) => {
   if (stock.validationErrors?.length > 0) {
     return {
       decision: 'INVALID_DATA',
       severity: 'CRITICAL',
       reasons: stock.validationErrors,
+    }
+  }
+
+  const staleReasons = getStaleDataReasons(stock)
+  if (staleReasons.length > 0) {
+    return {
+      decision: 'STALE_DATA',
+      severity: 'HIGH',
+      reasons: staleReasons,
     }
   }
 
@@ -396,6 +485,23 @@ function SelectCell({ label, value, onChange, error = '' }) {
   )
 }
 
+function DateInputCell({ label, value, onChange, error = '' }) {
+  return (
+    <label className="block">
+      <span className={`mb-1 block text-[11px] font-semibold ${error ? 'text-red-700' : 'text-slate-500'}`}>{label}</span>
+      <input
+        type="date"
+        value={value ?? ''}
+        onChange={(event) => onChange(event.target.value)}
+        className={`w-full rounded-xl border bg-white px-3 py-2 text-xs text-slate-900 outline-none transition focus:ring-4 ${
+          error ? 'border-red-300 focus:border-red-400 focus:ring-red-100' : 'border-slate-200 focus:border-sky-400 focus:ring-sky-100'
+        }`}
+      />
+      {error ? <span className="mt-1 block text-[10px] font-semibold text-red-600">{error}</span> : null}
+    </label>
+  )
+}
+
 function DecisionBadge({ result }) {
   return (
     <span className={`px-3 py-1 rounded-full border text-[11px] font-bold ${decisionTone[result.decision]}`}>
@@ -461,6 +567,11 @@ function StockCard({ stock, holding, onHoldingChange }) {
         <InputCell label="売上前年比(%)" value={holding.revenueYoY} onChange={(value) => updateField('revenueYoY', value)} placeholder="例: 3" signed error={fieldErrors.revenueYoY} />
         <InputCell label="自己資本比率(%)" value={holding.equityRatio} onChange={(value) => updateField('equityRatio', value)} placeholder="例: 45" error={fieldErrors.equityRatio} />
         <InputCell label="有利子負債倍率(倍)" value={holding.debtToEquity} onChange={(value) => updateField('debtToEquity', value)} placeholder="例: 1.8" error={fieldErrors.debtToEquity} />
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-2">
+        <DateInputCell label="価格更新日" value={holding.priceUpdatedAt} onChange={(value) => updateField('priceUpdatedAt', value)} error={fieldErrors.priceUpdatedAt} />
+        <DateInputCell label="財務更新日" value={holding.financialUpdatedAt} onChange={(value) => updateField('financialUpdatedAt', value)} error={fieldErrors.financialUpdatedAt} />
       </div>
 
       <div className="mt-3 grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
@@ -545,7 +656,18 @@ export default function PortfolioManagementDashboard() {
   const [selectedGroup, setSelectedGroup] = useState('ALL')
   const [selectedConditions, setSelectedConditions] = useState([])
   const [keyword, setKeyword] = useState('')
-  const [usdJpyInput, setUsdJpyInput] = useState(String(DEFAULT_USD_JPY))
+  const [settings, setSettings] = useState(() => {
+    try {
+      const saved = window.localStorage.getItem(SETTINGS_KEY)
+      return saved ? JSON.parse(saved) : { usdJpy: String(DEFAULT_USD_JPY), fxUpdatedAt: '' }
+    } catch {
+      return { usdJpy: String(DEFAULT_USD_JPY), fxUpdatedAt: '' }
+    }
+  })
+  const usdJpyInput = settings.usdJpy ?? String(DEFAULT_USD_JPY)
+  const fxUpdatedAtInput = settings.fxUpdatedAt ?? ''
+  const setUsdJpyInput = (value) => setSettings((current) => ({ ...current, usdJpy: value }))
+  const setFxUpdatedAtInput = (value) => setSettings((current) => ({ ...current, fxUpdatedAt: value }))
   const [holdings, setHoldings] = useState(() => {
     try {
       const saved = window.localStorage.getItem(STORAGE_KEY)
@@ -560,15 +682,20 @@ export default function PortfolioManagementDashboard() {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(holdings))
   }, [holdings])
 
+  useEffect(() => {
+    window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings))
+  }, [settings])
+
   const stocks = useMemo(() => normalizeStocks({ sections, businessMap, thesisMap, buyMap, sellMap }), [])
   const allGroups = useMemo(() => [...new Set(stocks.map((stock) => stock.group))], [stocks])
   const usdJpyValidationError = validateNumericValue('usdJpy', usdJpyInput, usdJpyRule)
+  const fxUpdatedAtValidationError = validateDateValue('USD/JPY更新日', fxUpdatedAtInput)
   const usdJpy = usdJpyValidationError ? null : toNumber(usdJpyInput)
 
   const enrichedStocks = useMemo(() => {
     const baseStocks = stocks.map((stock) => {
       const holding = holdings[stock.code] || {}
-      const validation = validateHoldingInput(holding, stock, usdJpyInput)
+      const validation = validateHoldingInput(holding, stock, usdJpyInput, fxUpdatedAtInput)
       const shares = toNumber(holding.shares)
       const averagePrice = toNumber(holding.averagePrice)
       const currentPrice = toNumber(holding.currentPrice)
@@ -580,6 +707,9 @@ export default function PortfolioManagementDashboard() {
       const equityRatio = toNumber(holding.equityRatio)
       const debtToEquity = toNumber(holding.debtToEquity)
       const dividendCut = toBooleanOrNull(holding.dividendCut)
+      const priceUpdatedAt = holding.priceUpdatedAt || ''
+      const financialUpdatedAt = holding.financialUpdatedAt || ''
+      const fxUpdatedAt = fxUpdatedAtInput || ''
       const fxRate = stock.currency === 'USD' ? usdJpy : 1
       const canCalculateFx = Number.isFinite(fxRate)
       const marketValueJPY = shares !== null && currentPrice !== null && canCalculateFx ? shares * currentPrice * fxRate : null
@@ -606,6 +736,9 @@ export default function PortfolioManagementDashboard() {
         equityRatio,
         debtToEquity,
         dividendCut,
+        priceUpdatedAt,
+        financialUpdatedAt,
+        fxUpdatedAt,
         marketValueJPY,
         costJPY,
         pnlJPY,
@@ -630,7 +763,7 @@ export default function PortfolioManagementDashboard() {
       const withWeights = { ...stock, positionWeight, sectorWeight }
       return { ...withWeights, decisionResult: judgeStock(withWeights) }
     })
-  }, [stocks, holdings, usdJpy])
+  }, [stocks, holdings, usdJpy, usdJpyInput, fxUpdatedAtInput])
 
   const filteredStocks = useMemo(() => {
     const normalizedKeyword = keyword.trim().toLowerCase()
@@ -729,7 +862,11 @@ export default function PortfolioManagementDashboard() {
     const negativePositions = enrichedStocks.filter((stock) => stock.pnlJPY !== null && stock.pnlJPY < 0)
     const missingValuationData = positionedStocks.filter((stock) => !stock.hasFullValuationData)
     const invalidStocks = enrichedStocks.filter((stock) => stock.decisionResult?.decision === 'INVALID_DATA')
-    const criticalStocks = enrichedStocks.filter((stock) => ['INVALID_DATA', 'SELL', 'REDUCE', 'NO_DATA'].includes(stock.decisionResult?.decision))
+    const staleStocks = enrichedStocks.filter((stock) => stock.decisionResult?.decision === 'STALE_DATA')
+    const priceStaleStocks = enrichedStocks.filter((stock) => stock.decisionResult?.decision === 'STALE_DATA' && stock.decisionResult?.reasons.some((reason) => reason.includes('現在価格') || reason.includes('価格更新日')))
+    const financialStaleStocks = enrichedStocks.filter((stock) => stock.decisionResult?.decision === 'STALE_DATA' && stock.decisionResult?.reasons.some((reason) => reason.includes('財務')))
+    const fxStaleStocks = enrichedStocks.filter((stock) => stock.decisionResult?.decision === 'STALE_DATA' && stock.decisionResult?.reasons.some((reason) => reason.includes('USD/JPY')))
+    const criticalStocks = enrichedStocks.filter((stock) => ['INVALID_DATA', 'STALE_DATA', 'SELL', 'REDUCE', 'NO_DATA'].includes(stock.decisionResult?.decision))
 
     return {
       positionedCount: positionedStocks.length,
@@ -749,6 +886,10 @@ export default function PortfolioManagementDashboard() {
       missingValuationData,
       decisionCounts,
       invalidStocks,
+      staleStocks,
+      priceStaleStocks,
+      financialStaleStocks,
+      fxStaleStocks,
       criticalStocks,
     }
   }, [enrichedStocks])
@@ -817,6 +958,8 @@ export default function PortfolioManagementDashboard() {
           equityRatio: getCsvValue(row, ['equityRatio', '自己資本比率']),
           debtToEquity: getCsvValue(row, ['debtToEquity', '有利子負債倍率']),
           dividendCut: getCsvValue(row, ['dividendCut', '減配']),
+          priceUpdatedAt: getCsvValue(row, ['priceUpdatedAt', '価格更新日']),
+          financialUpdatedAt: getCsvValue(row, ['financialUpdatedAt', '財務更新日']),
         })
 
         const values = Object.values(importedHolding)
@@ -848,6 +991,7 @@ export default function PortfolioManagementDashboard() {
       'code', 'name', 'market', 'group', 'currency',
       'shares', 'averagePrice', 'currentPrice', 'annualDividend',
       'payoutRatio', 'operatingCashFlowYoY', 'revenueYoY', 'epsYoY', 'equityRatio', 'debtToEquity', 'dividendCut',
+      'priceUpdatedAt', 'financialUpdatedAt', 'fxUpdatedAt',
       'decision', 'severity', 'decisionReasons', 'validationErrors',
       'marketValueJPY', 'costJPY', 'pnlJPY', 'annualDividendJPY', 'dividendYield', 'positionWeight', 'sectorWeight'
     ]
@@ -868,6 +1012,9 @@ export default function PortfolioManagementDashboard() {
       stock.holding.equityRatio || '',
       stock.holding.debtToEquity || '',
       stock.holding.dividendCut || '',
+      stock.holding.priceUpdatedAt || '',
+      stock.holding.financialUpdatedAt || '',
+      stock.fxUpdatedAt || '',
       stock.decisionResult?.decision || '',
       stock.decisionResult?.severity || '',
       (stock.decisionResult?.reasons || []).join(' / '),
@@ -889,15 +1036,17 @@ export default function PortfolioManagementDashboard() {
   const exportJson = () => {
     const backup = {
       app: 'portfolio-dashboard',
-      version: 4,
+      version: 5,
       exportedAt: new Date().toISOString(),
       usdJpy: usdJpyInput,
+      fxUpdatedAt: fxUpdatedAtInput,
       holdings,
       rules: {
         sell: ['減配あり', '配当性向100%以上', '営業CF前年比-30%以下', 'EPS前年比-30%以下', '自己資本比率20%未満', '有利子負債倍率5倍以上'],
         reduce: ['個別銘柄比率8%以上', '同一セクター比率25%以上', '配当性向80%以上', '営業CF前年比-15%以下', '含み損-20%以下'],
         buy: ['配当性向70%未満', '営業CF前年比0%以上', 'EPS前年比0%以上', '自己資本比率30%以上', '有利子負債倍率3倍未満', '配当利回り3%以上', '個別銘柄比率5%未満', '同一セクター比率20%未満'],
         invalidData: ['数値以外', '許容範囲外', 'USD/JPY 50未満または300超'],
+        staleData: ['現在価格7日超', 'USD/JPY7日超', '財務データ100日超'],
       },
     }
     downloadTextFile(JSON.stringify(backup, null, 2), 'portfolio-dashboard-backup.json', 'application/json;charset=utf-8;')
@@ -943,6 +1092,8 @@ export default function PortfolioManagementDashboard() {
           equityRatio: holding?.equityRatio,
           debtToEquity: holding?.debtToEquity,
           dividendCut: holding?.dividendCut,
+          priceUpdatedAt: holding?.priceUpdatedAt,
+          financialUpdatedAt: holding?.financialUpdatedAt,
         })
         const values = Object.values(normalized)
 
@@ -960,6 +1111,9 @@ export default function PortfolioManagementDashboard() {
       setHoldings(nextHoldings)
       if (parsed.usdJpy !== undefined && validateNumericValue('usdJpy', parsed.usdJpy, usdJpyRule) === null) {
         setUsdJpyInput(String(parsed.usdJpy))
+      }
+      if (parsed.fxUpdatedAt !== undefined && validateDateValue('USD/JPY更新日', parsed.fxUpdatedAt) === null) {
+        setFxUpdatedAtInput(String(parsed.fxUpdatedAt))
       }
       setImportMessage(`JSON取込完了: ${importedCount}件反映 / 未登録コード ${unknownCount}件 / 数値不正 ${invalidCount}件`)
     } catch (error) {
@@ -1003,7 +1157,7 @@ export default function PortfolioManagementDashboard() {
                 ))}
               </div>
 
-              <div className="grid gap-3 md:grid-cols-[1fr_180px_repeat(5,140px)] md:items-end">
+              <div className="grid gap-3 md:grid-cols-[1fr_180px_160px_repeat(5,140px)] md:items-end">
                 <div className="flex flex-col gap-2">
                   <label className="text-sm font-semibold text-slate-700">ジャンル</label>
                   <select
@@ -1024,6 +1178,16 @@ export default function PortfolioManagementDashboard() {
                     className={`w-full rounded-2xl border px-4 py-3 text-sm text-slate-900 outline-none transition focus:bg-white focus:ring-4 ${usdJpyValidationError ? 'border-red-300 bg-red-50 focus:border-red-400 focus:ring-red-100' : 'border-slate-200 bg-slate-50 focus:border-sky-400 focus:ring-sky-100'}`}
                   />
                   {usdJpyValidationError && <div className="text-xs font-semibold text-red-600">{usdJpyValidationError}</div>}
+                </div>
+                <div className="flex flex-col gap-2">
+                  <label className="text-sm font-semibold text-slate-700">USD/JPY更新日</label>
+                  <input
+                    type="date"
+                    value={fxUpdatedAtInput}
+                    onChange={(event) => setFxUpdatedAtInput(event.target.value)}
+                    className={`w-full rounded-2xl border px-4 py-3 text-sm text-slate-900 outline-none transition focus:bg-white focus:ring-4 ${fxUpdatedAtValidationError ? 'border-red-300 bg-red-50 focus:border-red-400 focus:ring-red-100' : 'border-slate-200 bg-slate-50 focus:border-sky-400 focus:ring-sky-100'}`}
+                  />
+                  {fxUpdatedAtValidationError && <div className="text-xs font-semibold text-red-600">{fxUpdatedAtValidationError}</div>}
                 </div>
                 <button type="button" onClick={exportCsv} className="rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50">CSV出力</button>
                 <label className="cursor-pointer rounded-2xl border border-sky-300 bg-sky-50 px-4 py-3 text-center text-sm font-semibold text-sky-700 hover:bg-sky-100">
@@ -1061,8 +1225,9 @@ export default function PortfolioManagementDashboard() {
             </div>
           </div>
 
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-7">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-8">
             <MetricCard label="INVALID" value={portfolioSummary.decisionCounts.INVALID_DATA || 0} subLabel="入力異常" tone="red" />
+            <MetricCard label="STALE" value={portfolioSummary.decisionCounts.STALE_DATA || 0} subLabel="期限切れ" tone="amber" />
             <MetricCard label="SELL" value={portfolioSummary.decisionCounts.SELL || 0} subLabel="強制売却条件" tone="red" />
             <MetricCard label="REDUCE" value={portfolioSummary.decisionCounts.REDUCE || 0} subLabel="削減条件" tone="amber" />
             <MetricCard label="BUY" value={portfolioSummary.decisionCounts.BUY || 0} subLabel="買い条件通過" tone="emerald" />
@@ -1078,10 +1243,17 @@ export default function PortfolioManagementDashboard() {
             <MetricCard label="未実装銘柄" value={missingCount} subLabel={`実保有想定 ${ACTUAL_HOLDING_COUNT}社 / 登録 ${stocks.length}社`} tone={missingCount > 0 ? 'red' : 'emerald'} />
           </div>
 
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <MetricCard label="期限切れ合計" value={portfolioSummary.staleStocks.length} subLabel="STALE_DATA" tone="amber" />
+            <MetricCard label="価格期限切れ" value={portfolioSummary.priceStaleStocks.length} subLabel="7日超または未入力" tone="amber" />
+            <MetricCard label="財務期限切れ" value={portfolioSummary.financialStaleStocks.length} subLabel="100日超または未入力" tone="amber" />
+            <MetricCard label="為替期限切れ" value={portfolioSummary.fxStaleStocks.length} subLabel="7日超または未入力" tone="amber" />
+          </div>
+
           <div className="grid gap-6 xl:grid-cols-3">
             <div className="bg-white/80 backdrop-blur-3xl border border-white/60 rounded-[32px] shadow-[0_20px_60px_rgba(15,23,42,0.08)] p-6 xl:col-span-2">
               <h2 className="text-2xl font-bold text-slate-900 mb-4">機械判定ルール</h2>
-              <div className="grid gap-4 md:grid-cols-3 text-sm">
+              <div className="grid gap-4 md:grid-cols-4 text-sm">
                 <div className="rounded-2xl border border-red-200 bg-red-50 p-4">
                   <div className="font-bold text-red-700 mb-2">SELL</div>
                   <ul className="space-y-1 text-slate-700">
@@ -1100,16 +1272,22 @@ export default function PortfolioManagementDashboard() {
                     <li>・配当性向70%未満</li><li>・営業CF前年比0%以上</li><li>・EPS前年比0%以上</li><li>・自己資本比率30%以上</li><li>・有利子負債倍率3倍未満</li><li>・配当利回り3%以上</li><li>・集中度基準内</li>
                   </ul>
                 </div>
+                <div className="rounded-2xl border border-orange-200 bg-orange-50 p-4">
+                  <div className="font-bold text-orange-700 mb-2">STALE_DATA</div>
+                  <ul className="space-y-1 text-slate-700">
+                    <li>・現在価格7日超</li><li>・USD/JPY7日超</li><li>・財務データ100日超</li><li>・更新日未入力</li><li>・期限切れ時は判定停止</li>
+                  </ul>
+                </div>
               </div>
               <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm font-semibold text-slate-700">
-                入力できるのは数値・事実のみ。判定優先順位は INVALID_DATA → NO_DATA → SELL → REDUCE → BUY → HOLD → WATCH。異常値がある場合は売買判定を停止し、人間による上書きは不可。
+                入力できるのは数値・事実のみ。判定優先順位は INVALID_DATA → STALE_DATA → NO_DATA → SELL → REDUCE → BUY → HOLD → WATCH。異常値がある場合は売買判定を停止し、人間による上書きは不可。
               </div>
             </div>
 
             <div className="bg-white/80 backdrop-blur-3xl border border-white/60 rounded-[32px] shadow-[0_20px_60px_rgba(15,23,42,0.08)] p-6">
               <h2 className="text-2xl font-bold text-slate-900 mb-4">要対応リスト</h2>
               {portfolioSummary.criticalStocks.length === 0 ? (
-                <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">INVALID_DATA / SELL / REDUCE / NO_DATA はありません。</div>
+                <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">INVALID_DATA / STALE_DATA / SELL / REDUCE / NO_DATA はありません。</div>
               ) : (
                 <div className="space-y-3 max-h-[420px] overflow-auto pr-1">
                   {portfolioSummary.criticalStocks.slice(0, 20).map((stock) => (
@@ -1200,6 +1378,7 @@ export default function PortfolioManagementDashboard() {
               <h2 className="text-2xl font-bold text-slate-900 mb-4">リスク警告</h2>
               <ul className="space-y-3 text-sm text-slate-700">
                 <li className="rounded-2xl border border-red-200 bg-red-50 p-3">未実装銘柄: {missingCount}社</li>
+                <li className="rounded-2xl border border-amber-200 bg-amber-50 p-3">STALE_DATA: {portfolioSummary.decisionCounts.STALE_DATA || 0}社</li>
                 <li className="rounded-2xl border border-red-200 bg-red-50 p-3">SELL: {portfolioSummary.decisionCounts.SELL || 0}社</li>
                 <li className="rounded-2xl border border-amber-200 bg-amber-50 p-3">REDUCE: {portfolioSummary.decisionCounts.REDUCE || 0}社</li>
                 <li className="rounded-2xl border border-amber-200 bg-amber-50 p-3">NO_DATA: {portfolioSummary.decisionCounts.NO_DATA || 0}社</li>
@@ -1255,12 +1434,14 @@ export default function PortfolioManagementDashboard() {
               <div className="bg-amber-50 border border-amber-200 rounded-[28px] p-6">
                 <h3 className="font-semibold text-amber-700 mb-3">今回追加したこと</h3>
                 <ul className="space-y-2 text-sm text-slate-700">
-                  <li>・INVALID_DATA / BUY / HOLD / WATCH / REDUCE / SELL / NO_DATAの機械判定</li>
+                  <li>・INVALID_DATA / STALE_DATA / BUY / HOLD / WATCH / REDUCE / SELL / NO_DATAの機械判定</li>
                   <li>・入力異常値チェックと異常時の判定停止</li>
+                  <li>・STALE_DATA判定と期限切れ時の判定停止</li>
+                  <li>・価格更新日、財務更新日、USD/JPY更新日の管理</li>
                   <li>・人間による判定上書きの排除</li>
                   <li>・配当性向、営業CF前年比、EPS前年比、財務安全性入力</li>
                   <li>・判定理由と重大度表示</li>
-                  <li>・INVALID_DATA / SELL / REDUCE / NO_DATA件数集計</li>
+                  <li>・INVALID_DATA / STALE_DATA / SELL / REDUCE / NO_DATA件数集計</li>
                   <li>・CSV / JSONへの判定用データ拡張</li>
                   <li>・prebuilt dist配信対応</li>
                 </ul>
