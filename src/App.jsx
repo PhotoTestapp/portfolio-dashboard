@@ -4099,6 +4099,60 @@ export default function PortfolioManagementDashboard() {
     downloadTextFile(`﻿${csv}`, 'portfolio-missing-data-template.csv', 'text/csv;charset=utf-8;')
   }
 
+
+  const bulkInputSuggestions = useMemo(() => {
+    return [...coverageDiagnostics.blockers]
+      .sort((a, b) => (b.priority || 0) - (a.priority || 0))
+      .map((item) => {
+        const stock = enrichedStocks.find((target) => target.code === item.code)
+        const hint = getMissingDataTemplateHint(item.fieldName)
+        const requiresEvidence = ['payoutRatio', 'operatingCashFlowYoY', 'revenueYoY', 'epsYoY', 'equityRatio', 'debtToEquity', 'annualDividend', 'dividendCut', 'sourceName', 'sourceUrl', 'fiscalPeriod', 'dataType', 'confirmedAt', 'sourcePage', 'sourceQuote', 'selectedEvidenceValue', 'sourceMetricName', 'sourceUnit'].includes(item.fieldName)
+        const priority = Math.round(item.priority || 0)
+        const placeholder = item.fieldName.endsWith('UpdatedAt') || item.fieldName === 'confirmedAt'
+          ? 'YYYY-MM-DD'
+          : item.fieldName === 'dividendCut'
+            ? 'true/false'
+            : item.fieldName === 'dataType'
+              ? 'actual'
+              : item.fieldName === 'ruleProfile'
+                ? (stock?.ruleProfile || 'GENERAL')
+                : '入力値'
+        return {
+          code: item.code,
+          name: item.name,
+          market: stock?.market || '',
+          group: stock?.group || '',
+          ruleProfile: stock?.ruleProfile || '',
+          missingField: item.fieldName,
+          missingFieldLabel: item.fieldLabel,
+          suggestedField: item.fieldName,
+          suggestedReason: hint.reason,
+          requiredEvidence: requiresEvidence ? hint.sourceRequired : '任意または内部データ',
+          inputHint: hint.hint,
+          pasteTemplate: `${item.code}	${item.fieldName}	${placeholder}`,
+          currentDecision: item.decision,
+          riskPriorityScore: stock?.riskPriorityScore || 0,
+          coverageScore: item.coverageScore,
+          impact: item.impact,
+          priority,
+        }
+      })
+  }, [coverageDiagnostics.blockers, enrichedStocks])
+
+  const exportBulkInputSuggestionsCsv = () => {
+    const header = ['code', 'name', 'market', 'group', 'ruleProfile', 'suggestedField', 'suggestedFieldLabel', 'suggestedReason', 'requiredEvidence', 'inputHint', 'pasteTemplate', 'currentDecision', 'riskPriorityScore', 'coverageScore', 'impact', 'priority']
+    const rows = bulkInputSuggestions.map((item) => [item.code, item.name, item.market, item.group, item.ruleProfile, item.suggestedField, item.missingFieldLabel, item.suggestedReason, item.requiredEvidence, item.inputHint, item.pasteTemplate, item.currentDecision, item.riskPriorityScore, item.coverageScore, item.impact, item.priority])
+    const csv = [header, ...rows].map((row) => row.map((cell) => `"${String(cell ?? '').replaceAll('"', '""')}"`).join(',')).join('\n')
+    downloadTextFile(`﻿${csv}`, 'portfolio-bulk-input-suggestions.csv', 'text/csv;charset=utf-8;')
+  }
+
+  const exportBulkPasteTemplateTsv = () => {
+    const header = ['code', 'missingField', 'importedValue']
+    const rows = bulkInputSuggestions.map((item) => [item.code, item.suggestedField, ''])
+    const tsv = [header, ...rows].map((row) => row.map((cell) => String(cell ?? '').replaceAll('	', ' ').replaceAll('\n', ' ')).join('	')).join('\n')
+    downloadTextFile(tsv, 'portfolio-bulk-paste-template.tsv', 'text/tab-separated-values;charset=utf-8;')
+  }
+
   const applyRiskWeightRecommendations = () => {
     const actionable = riskWeightDiagnostics.filter((item) => ['INCREASE', 'DECREASE'].includes(item.recommendation) && item.evaluatedCount >= 3 && item.suggestedWeight !== item.currentWeight)
     if (actionable.length === 0) {
@@ -4234,6 +4288,8 @@ export default function PortfolioManagementDashboard() {
                 <button type="button" onClick={exportOperationalReportJson} className="rounded-2xl border border-blue-300 bg-white px-4 py-3 text-sm font-semibold text-blue-700 hover:bg-blue-50">運用レポートJSON</button>
                 <button type="button" onClick={exportCoverageDiagnosticsCsv} className="rounded-2xl border border-teal-300 bg-teal-50 px-4 py-3 text-sm font-semibold text-teal-700 hover:bg-teal-100">不足診断CSV</button>
                 <button type="button" onClick={exportMissingDataTemplateCsv} className="rounded-2xl border border-teal-300 bg-white px-4 py-3 text-sm font-semibold text-teal-700 hover:bg-teal-50">不足入力テンプレートCSV</button>
+                <button type="button" onClick={exportBulkInputSuggestionsCsv} className="rounded-2xl border border-cyan-300 bg-cyan-50 px-4 py-3 text-sm font-semibold text-cyan-700 hover:bg-cyan-100">入力候補CSV</button>
+                <button type="button" onClick={exportBulkPasteTemplateTsv} className="rounded-2xl border border-cyan-300 bg-white px-4 py-3 text-sm font-semibold text-cyan-700 hover:bg-cyan-50">貼付用TSV</button>
                 <label className="cursor-pointer rounded-2xl border border-teal-300 bg-teal-50 px-4 py-3 text-center text-sm font-semibold text-teal-700 hover:bg-teal-100">
                   不足入力CSV取込
                   <input type="file" accept=".csv,text/csv" onChange={importMissingDataTemplateCsv} className="hidden" />
@@ -4246,6 +4302,49 @@ export default function PortfolioManagementDashboard() {
               </div>
 
               {importMessage && <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm font-semibold text-sky-800">{importMessage}</div>}
+
+              <div className="rounded-3xl border border-cyan-200 bg-cyan-50 p-5">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <div>
+                    <h3 className="text-lg font-bold text-cyan-900">入力候補の自動生成</h3>
+                    <p className="mt-1 text-sm text-cyan-800">カバレッジ診断・リスク優先度・停止判定から、次に入力すべき項目を機械的に並べます。</p>
+                    <p className="mt-1 text-xs text-cyan-700">CSVは作業指示用、TSVは一括貼り付け欄へそのまま貼るための空テンプレートです。</p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button type="button" onClick={exportBulkInputSuggestionsCsv} className="rounded-2xl border border-cyan-300 bg-cyan-600 px-4 py-2 text-sm font-semibold text-white hover:bg-cyan-700">入力候補CSV</button>
+                    <button type="button" onClick={exportBulkPasteTemplateTsv} className="rounded-2xl border border-cyan-300 bg-white px-4 py-2 text-sm font-semibold text-cyan-700 hover:bg-cyan-100">貼付用TSV</button>
+                  </div>
+                </div>
+                <div className="mt-4 max-h-72 overflow-auto rounded-2xl border border-cyan-200 bg-white">
+                  <table className="min-w-full text-left text-xs">
+                    <thead className="sticky top-0 bg-cyan-100 text-cyan-900">
+                      <tr>
+                        <th className="px-3 py-2">優先</th>
+                        <th className="px-3 py-2">銘柄</th>
+                        <th className="px-3 py-2">入力項目</th>
+                        <th className="px-3 py-2">理由</th>
+                        <th className="px-3 py-2">必要根拠</th>
+                        <th className="px-3 py-2">貼付形式</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {bulkInputSuggestions.slice(0, 15).map((item, index) => (
+                        <tr key={`${item.code}-${item.suggestedField}-${index}`}>
+                          <td className="px-3 py-2 font-bold text-cyan-800">{index + 1}</td>
+                          <td className="px-3 py-2">{item.code} {item.name}</td>
+                          <td className="px-3 py-2 font-semibold">{item.missingFieldLabel}</td>
+                          <td className="px-3 py-2">{item.suggestedReason}</td>
+                          <td className="px-3 py-2">{item.requiredEvidence}</td>
+                          <td className="px-3 py-2 font-mono text-[11px]">{item.pasteTemplate}</td>
+                        </tr>
+                      ))}
+                      {bulkInputSuggestions.length === 0 && (
+                        <tr><td className="px-3 py-4 text-slate-500" colSpan={6}>入力候補なし</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
 
               <div className="rounded-3xl border border-teal-200 bg-teal-50 p-5">
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -4405,6 +4504,8 @@ export default function PortfolioManagementDashboard() {
               <div className="flex flex-wrap gap-2">
                 <button type="button" onClick={exportCoverageDiagnosticsCsv} className="rounded-2xl border border-teal-300 bg-teal-50 px-4 py-2 text-xs font-bold text-teal-700 hover:bg-teal-100">不足診断CSV</button>
                 <button type="button" onClick={exportMissingDataTemplateCsv} className="rounded-2xl border border-teal-300 bg-white px-4 py-2 text-xs font-bold text-teal-700 hover:bg-teal-50">不足入力テンプレートCSV</button>
+                <button type="button" onClick={exportBulkInputSuggestionsCsv} className="rounded-2xl border border-cyan-300 bg-cyan-50 px-4 py-2 text-xs font-bold text-cyan-700 hover:bg-cyan-100">入力候補CSV</button>
+                <button type="button" onClick={exportBulkPasteTemplateTsv} className="rounded-2xl border border-cyan-300 bg-white px-4 py-2 text-xs font-bold text-cyan-700 hover:bg-cyan-50">貼付用TSV</button>
                 <label className="cursor-pointer rounded-2xl border border-teal-300 bg-teal-50 px-4 py-2 text-xs font-bold text-teal-700 hover:bg-teal-100">
                   不足入力CSV取込
                   <input type="file" accept=".csv,text/csv" onChange={importMissingDataTemplateCsv} className="hidden" />
