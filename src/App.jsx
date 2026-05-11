@@ -12,6 +12,7 @@ const decisionLabels = {
   UNVERIFIED_DATA: 'UNVERIFIED_DATA',
   WEAK_EVIDENCE: 'WEAK_EVIDENCE',
   MISMATCHED_EVIDENCE: 'MISMATCHED_EVIDENCE',
+  MULTIPLE_EVIDENCE_VALUES: 'MULTIPLE_EVIDENCE_VALUES',
   STALE_DATA: 'STALE_DATA',
   BUY: 'BUY',
   HOLD: 'HOLD',
@@ -26,6 +27,7 @@ const decisionTone = {
   UNVERIFIED_DATA: 'bg-purple-50 border-purple-300 text-purple-800',
   WEAK_EVIDENCE: 'bg-fuchsia-50 border-fuchsia-300 text-fuchsia-800',
   MISMATCHED_EVIDENCE: 'bg-rose-50 border-rose-300 text-rose-800',
+  MULTIPLE_EVIDENCE_VALUES: 'bg-pink-50 border-pink-300 text-pink-800',
   STALE_DATA: 'bg-orange-50 border-orange-300 text-orange-800',
   BUY: 'bg-emerald-50 border-emerald-300 text-emerald-800',
   HOLD: 'bg-sky-50 border-sky-300 text-sky-800',
@@ -63,13 +65,14 @@ const holdingFields = [
   'confirmedAt',
   'sourcePage',
   'sourceQuote',
+  'selectedEvidenceValue',
   'sourceMetricName',
   'sourceUnit',
   'evidenceMemo',
 ]
 
 const dateFields = ['priceUpdatedAt', 'financialUpdatedAt', 'confirmedAt']
-const evidenceFields = ['sourceName', 'sourceUrl', 'fiscalPeriod', 'dataType', 'confirmedAt', 'sourcePage', 'sourceQuote', 'sourceMetricName', 'sourceUnit', 'evidenceMemo']
+const evidenceFields = ['sourceName', 'sourceUrl', 'fiscalPeriod', 'dataType', 'confirmedAt', 'sourcePage', 'sourceQuote', 'selectedEvidenceValue', 'sourceMetricName', 'sourceUnit', 'evidenceMemo']
 const numericFields = holdingFields.filter((field) => field !== 'dividendCut' && !dateFields.includes(field) && !evidenceFields.includes(field))
 const nonNegativeFields = ['shares', 'averagePrice', 'currentPrice', 'annualDividend', 'payoutRatio', 'equityRatio', 'debtToEquity']
 const signedFields = ['operatingCashFlowYoY', 'revenueYoY', 'epsYoY']
@@ -311,6 +314,7 @@ const normalizeImportedHolding = (raw) => {
   normalized.confirmedAt = String(raw.confirmedAt || '').trim()
   normalized.sourcePage = String(raw.sourcePage || '').trim()
   normalized.sourceQuote = String(raw.sourceQuote || '').trim()
+  normalized.selectedEvidenceValue = String(raw.selectedEvidenceValue || '').replace(/,/g, '').trim()
   normalized.sourceMetricName = String(raw.sourceMetricName || '').trim()
   normalized.sourceUnit = String(raw.sourceUnit || '').trim()
   normalized.evidenceMemo = String(raw.evidenceMemo || '').trim()
@@ -490,41 +494,88 @@ const findEvidenceMetricDefinition = (metricName) => {
   ) || null
 }
 
+const parseSelectedEvidenceValue = (value) => {
+  if (value === '' || value === null || value === undefined) return null
+  const number = Number(String(value).replace(/,/g, '').trim())
+  return Number.isFinite(number) ? number : null
+}
+
 const checkEvidenceMatch = (stock) => {
+  const emptyResult = { status: 'NOT_APPLICABLE', errors: [], multipleEvidenceValueErrors: [], quotedValue: null, selectedEvidenceValue: null, inputValue: null, difference: null, matchedField: '', matchedMetricLabel: '', multipleNumbers: false, extractedNumbers: [] }
+
   if (!hasAnyEvidenceTargetData(stock.holding)) {
-    return { status: 'NOT_APPLICABLE', errors: [], quotedValue: null, inputValue: null, difference: null, matchedField: '', matchedMetricLabel: '', multipleNumbers: false, extractedNumbers: [] }
+    return emptyResult
   }
 
   const definition = findEvidenceMetricDefinition(stock.sourceMetricName)
   if (!definition) {
-    return { status: 'NOT_APPLICABLE', errors: [], quotedValue: null, inputValue: null, difference: null, matchedField: '', matchedMetricLabel: '', multipleNumbers: false, extractedNumbers: [] }
+    return emptyResult
   }
 
   const inputValue = stock[definition.field]
   if (inputValue === null || inputValue === undefined || !Number.isFinite(inputValue)) {
-    return { status: 'NOT_APPLICABLE', errors: [], quotedValue: null, inputValue: null, difference: null, matchedField: definition.field, matchedMetricLabel: definition.label, multipleNumbers: false, extractedNumbers: [] }
+    return { ...emptyResult, matchedField: definition.field, matchedMetricLabel: definition.label }
   }
 
   const extractedNumbers = extractNumbersFromQuote(stock.sourceQuote)
   if (extractedNumbers.length === 0) {
-    return { status: 'NOT_APPLICABLE', errors: [], quotedValue: null, inputValue, difference: null, matchedField: definition.field, matchedMetricLabel: definition.label, multipleNumbers: false, extractedNumbers }
+    return { ...emptyResult, inputValue, matchedField: definition.field, matchedMetricLabel: definition.label, extractedNumbers }
   }
 
-  const candidates = extractedNumbers.map((quotedValue) => ({
-    quotedValue,
-    difference: Math.abs(quotedValue - inputValue),
-  })).sort((a, b) => a.difference - b.difference)
-
-  const best = candidates[0]
-  const matched = best.difference <= definition.tolerance
   const multipleNumbers = extractedNumbers.length >= 2
+  const selectedEvidenceValue = parseSelectedEvidenceValue(stock.selectedEvidenceValue)
+  const multipleEvidenceValueErrors = []
+
+  if (multipleNumbers && selectedEvidenceValue === null) {
+    multipleEvidenceValueErrors.push('引用文に複数の数値があります。採用証跡値を指定してください。')
+    return {
+      status: 'MULTIPLE_VALUES',
+      errors: [],
+      multipleEvidenceValueErrors,
+      quotedValue: null,
+      selectedEvidenceValue: null,
+      inputValue,
+      difference: null,
+      matchedField: definition.field,
+      matchedMetricLabel: definition.label,
+      multipleNumbers,
+      extractedNumbers,
+    }
+  }
+
+  let quotedValue = extractedNumbers[0]
+  if (multipleNumbers) {
+    const selectedMatched = extractedNumbers.some((value) => Math.abs(value - selectedEvidenceValue) <= definition.tolerance)
+    if (!selectedMatched) {
+      multipleEvidenceValueErrors.push(`採用証跡値${selectedEvidenceValue}が引用文内の数値と一致しません（許容差±${definition.tolerance}）`)
+      return {
+        status: 'MULTIPLE_VALUES',
+        errors: [],
+        multipleEvidenceValueErrors,
+        quotedValue: null,
+        selectedEvidenceValue,
+        inputValue,
+        difference: null,
+        matchedField: definition.field,
+        matchedMetricLabel: definition.label,
+        multipleNumbers,
+        extractedNumbers,
+      }
+    }
+    quotedValue = selectedEvidenceValue
+  }
+
+  const difference = Math.abs(quotedValue - inputValue)
+  const matched = difference <= definition.tolerance
 
   return {
     status: matched ? 'MATCH' : 'MISMATCH',
-    errors: matched ? [] : [`証跡不一致: ${definition.label}の入力値${inputValue}と引用値${best.quotedValue}の差分が${best.difference.toFixed(2)}（許容差±${definition.tolerance}）`],
-    quotedValue: best.quotedValue,
+    errors: matched ? [] : [`証跡不一致: ${definition.label}の入力値${inputValue}と採用証跡値${quotedValue}の差分が${difference.toFixed(2)}（許容差±${definition.tolerance}）`],
+    multipleEvidenceValueErrors,
+    quotedValue,
+    selectedEvidenceValue: multipleNumbers ? selectedEvidenceValue : quotedValue,
     inputValue,
-    difference: best.difference,
+    difference,
     matchedField: definition.field,
     matchedMetricLabel: definition.label,
     multipleNumbers,
@@ -604,6 +655,14 @@ const judgeStock = (stock) => {
       decision: 'WEAK_EVIDENCE',
       severity: 'HIGH',
       reasons: stock.evidenceErrors,
+    }
+  }
+
+  if (stock.multipleEvidenceValueErrors?.length > 0) {
+    return {
+      decision: 'MULTIPLE_EVIDENCE_VALUES',
+      severity: 'HIGH',
+      reasons: stock.multipleEvidenceValueErrors,
     }
   }
 
@@ -894,6 +953,7 @@ function StockCard({ stock, holding, onHoldingChange }) {
           <div className="mb-2 text-xs font-bold text-fuchsia-800">証跡レベル</div>
           <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
             <TextCell label="根拠ページ" value={holding.sourcePage} onChange={(value) => updateField('sourcePage', value)} placeholder="例: 12" error={fieldErrors.sourcePage} inputMode="numeric" />
+            <TextCell label="採用証跡値" value={holding.selectedEvidenceValue} onChange={(value) => updateField('selectedEvidenceValue', value)} placeholder="複数数値時のみ必須。例: 62.4" error={fieldErrors.selectedEvidenceValue} inputMode="decimal" />
             <TextCell label="参照指標名" value={holding.sourceMetricName} onChange={(value) => updateField('sourceMetricName', value)} placeholder="例: 配当性向" error={fieldErrors.sourceMetricName} />
             <TextCell label="単位" value={holding.sourceUnit} onChange={(value) => updateField('sourceUnit', value)} placeholder="例: % / 円 / USD" error={fieldErrors.sourceUnit} />
             <TextCell label="補足メモ" value={holding.evidenceMemo} onChange={(value) => updateField('evidenceMemo', value)} placeholder="任意" error={fieldErrors.evidenceMemo} />
@@ -952,15 +1012,21 @@ function StockCard({ stock, holding, onHoldingChange }) {
       )}
 
       {stock.evidenceMatch?.status && stock.evidenceMatch.status !== 'NOT_APPLICABLE' && (
-        <div className={`mt-4 rounded-2xl border p-4 text-xs font-semibold ${stock.evidenceMatch.status === 'MISMATCH' ? 'border-rose-300 bg-rose-50 text-rose-800' : 'border-emerald-300 bg-emerald-50 text-emerald-800'}`}>
-          <div className="mb-2 text-sm font-bold">証跡照合: {stock.evidenceMatch.status === 'MISMATCH' ? '不一致' : '一致'}</div>
-          <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+        <div className={`mt-4 rounded-2xl border p-4 text-xs font-semibold ${stock.evidenceMatch.status === 'MISMATCH' ? 'border-rose-300 bg-rose-50 text-rose-800' : stock.evidenceMatch.status === 'MULTIPLE_VALUES' ? 'border-pink-300 bg-pink-50 text-pink-800' : 'border-emerald-300 bg-emerald-50 text-emerald-800'}`}>
+          <div className="mb-2 text-sm font-bold">証跡照合: {stock.evidenceMatch.status === 'MISMATCH' ? '不一致' : stock.evidenceMatch.status === 'MULTIPLE_VALUES' ? '複数数値未指定' : '一致'}</div>
+          <div className="grid grid-cols-2 gap-2 md:grid-cols-5">
             <div>指標: {stock.evidenceMatch.matchedMetricLabel || '-'}</div>
+            <div>採用証跡値: {stock.evidenceMatch.selectedEvidenceValue ?? '-'}</div>
             <div>引用値: {stock.evidenceMatch.quotedValue ?? '-'}</div>
             <div>入力値: {stock.evidenceMatch.inputValue ?? '-'}</div>
             <div>差分: {stock.evidenceMatch.difference !== null ? stock.evidenceMatch.difference.toFixed(2) : '-'}</div>
           </div>
-          {stock.evidenceMatch.multipleNumbers && <div className="mt-2">複数数値引用: {stock.evidenceMatch.extractedNumbers.join(' / ')}</div>}
+          {stock.evidenceMatch.multipleNumbers && <div className="mt-2">引用内数値: {stock.evidenceMatch.extractedNumbers.join(' / ')}</div>}
+          {stock.multipleEvidenceValueErrors?.length > 0 && (
+            <ul className="mt-2 space-y-1">
+              {stock.multipleEvidenceValueErrors.slice(0, 4).map((error) => <li key={error}>・{error}</li>)}
+            </ul>
+          )}
           {stock.evidenceMatchErrors?.length > 0 && (
             <ul className="mt-2 space-y-1">
               {stock.evidenceMatchErrors.slice(0, 4).map((error) => <li key={error}>・{error}</li>)}
@@ -1118,6 +1184,7 @@ export default function PortfolioManagementDashboard() {
         confirmedAt: holding.confirmedAt || '',
         sourcePage: holding.sourcePage || '',
         sourceQuote: holding.sourceQuote || '',
+        selectedEvidenceValue: holding.selectedEvidenceValue || '',
         sourceMetricName: holding.sourceMetricName || '',
         sourceUnit: holding.sourceUnit || '',
         evidenceMemo: holding.evidenceMemo || '',
@@ -1132,7 +1199,7 @@ export default function PortfolioManagementDashboard() {
       }
 
       const evidenceMatch = checkEvidenceMatch(baseStock)
-      return { ...baseStock, evidenceMatch, evidenceMatchErrors: evidenceMatch.errors }
+      return { ...baseStock, evidenceMatch, evidenceMatchErrors: evidenceMatch.errors, multipleEvidenceValueErrors: evidenceMatch.multipleEvidenceValueErrors }
     })
 
     const totalMarketValueJPY = baseStocks.reduce((sum, stock) => sum + (stock.marketValueJPY || 0), 0)
@@ -1262,13 +1329,14 @@ export default function PortfolioManagementDashboard() {
     const fxStaleStocks = enrichedStocks.filter((stock) => stock.decisionResult?.decision === 'STALE_DATA' && stock.decisionResult?.reasons.some((reason) => reason.includes('USD/JPY')))
     const weakEvidenceStocks = enrichedStocks.filter((stock) => stock.decisionResult?.decision === 'WEAK_EVIDENCE')
     const mismatchedEvidenceStocks = enrichedStocks.filter((stock) => stock.decisionResult?.decision === 'MISMATCHED_EVIDENCE')
+    const multipleEvidenceValueStocks = enrichedStocks.filter((stock) => stock.decisionResult?.decision === 'MULTIPLE_EVIDENCE_VALUES')
     const evidenceMatchedStocks = enrichedStocks.filter((stock) => stock.evidenceMatch?.status === 'MATCH')
     const evidenceNotApplicableStocks = enrichedStocks.filter((stock) => stock.evidenceMatch?.status === 'NOT_APPLICABLE')
     const multipleNumberEvidenceStocks = enrichedStocks.filter((stock) => stock.evidenceMatch?.multipleNumbers)
     const quoteMissingStocks = enrichedStocks.filter((stock) => stock.evidenceFieldErrors?.sourceQuote)
     const pageMissingStocks = enrichedStocks.filter((stock) => stock.evidenceFieldErrors?.sourcePage)
     const metricMissingStocks = enrichedStocks.filter((stock) => stock.evidenceFieldErrors?.sourceMetricName)
-    const criticalStocks = enrichedStocks.filter((stock) => ['INVALID_DATA', 'UNVERIFIED_DATA', 'WEAK_EVIDENCE', 'MISMATCHED_EVIDENCE', 'STALE_DATA', 'SELL', 'REDUCE', 'NO_DATA'].includes(stock.decisionResult?.decision))
+    const criticalStocks = enrichedStocks.filter((stock) => ['INVALID_DATA', 'UNVERIFIED_DATA', 'WEAK_EVIDENCE', 'MULTIPLE_EVIDENCE_VALUES', 'MISMATCHED_EVIDENCE', 'STALE_DATA', 'SELL', 'REDUCE', 'NO_DATA'].includes(stock.decisionResult?.decision))
 
     return {
       positionedCount: positionedStocks.length,
@@ -1294,6 +1362,7 @@ export default function PortfolioManagementDashboard() {
       dataTypeMissingStocks,
       weakEvidenceStocks,
       mismatchedEvidenceStocks,
+      multipleEvidenceValueStocks,
       evidenceMatchedStocks,
       evidenceNotApplicableStocks,
       multipleNumberEvidenceStocks,
@@ -1381,6 +1450,7 @@ export default function PortfolioManagementDashboard() {
           confirmedAt: getCsvValue(row, ['confirmedAt', '根拠確認日']),
           sourcePage: getCsvValue(row, ['sourcePage', '根拠ページ']),
           sourceQuote: getCsvValue(row, ['sourceQuote', '引用文・該当数値', '引用']),
+          selectedEvidenceValue: getCsvValue(row, ['selectedEvidenceValue', '採用証跡値']),
           sourceMetricName: getCsvValue(row, ['sourceMetricName', '参照指標名', '指標名']),
           sourceUnit: getCsvValue(row, ['sourceUnit', '単位']),
           evidenceMemo: getCsvValue(row, ['evidenceMemo', '補足メモ']),
@@ -1417,9 +1487,9 @@ export default function PortfolioManagementDashboard() {
       'payoutRatio', 'operatingCashFlowYoY', 'revenueYoY', 'epsYoY', 'equityRatio', 'debtToEquity', 'dividendCut',
       'priceUpdatedAt', 'financialUpdatedAt', 'fxUpdatedAt',
       'sourceName', 'sourceUrl', 'fiscalPeriod', 'dataType', 'confirmedAt',
-      'sourcePage', 'sourceQuote', 'sourceMetricName', 'sourceUnit', 'evidenceMemo',
-      'decision', 'severity', 'decisionReasons', 'validationErrors', 'verificationErrors', 'evidenceErrors', 'evidenceMatchErrors',
-      'evidenceMatchStatus', 'evidenceQuotedValue', 'evidenceInputValue', 'evidenceDifference', 'evidenceMatchedMetric', 'evidenceExtractedNumbers',
+      'sourcePage', 'sourceQuote', 'selectedEvidenceValue', 'sourceMetricName', 'sourceUnit', 'evidenceMemo',
+      'decision', 'severity', 'decisionReasons', 'validationErrors', 'verificationErrors', 'evidenceErrors', 'multipleEvidenceValueErrors', 'evidenceMatchErrors',
+      'evidenceMatchStatus', 'evidenceQuotedValue', 'evidenceSelectedValue', 'evidenceInputValue', 'evidenceDifference', 'evidenceMatchedMetric', 'evidenceExtractedNumbers',
       'marketValueJPY', 'costJPY', 'pnlJPY', 'annualDividendJPY', 'dividendYield', 'positionWeight', 'sectorWeight'
     ]
     const rows = enrichedStocks.map((stock) => [
@@ -1449,6 +1519,7 @@ export default function PortfolioManagementDashboard() {
       stock.holding.confirmedAt || '',
       stock.holding.sourcePage || '',
       stock.holding.sourceQuote || '',
+      stock.holding.selectedEvidenceValue || '',
       stock.holding.sourceMetricName || '',
       stock.holding.sourceUnit || '',
       stock.holding.evidenceMemo || '',
@@ -1458,9 +1529,11 @@ export default function PortfolioManagementDashboard() {
       (stock.validationErrors || []).join(' / '),
       (stock.verificationErrors || []).join(' / '),
       (stock.evidenceErrors || []).join(' / '),
+      (stock.multipleEvidenceValueErrors || []).join(' / '),
       (stock.evidenceMatchErrors || []).join(' / '),
       stock.evidenceMatch?.status || '',
       stock.evidenceMatch?.quotedValue ?? '',
+      stock.evidenceMatch?.selectedEvidenceValue ?? '',
       stock.evidenceMatch?.inputValue ?? '',
       stock.evidenceMatch?.difference ?? '',
       stock.evidenceMatch?.matchedMetricLabel || '',
@@ -1482,7 +1555,7 @@ export default function PortfolioManagementDashboard() {
   const exportJson = () => {
     const backup = {
       app: 'portfolio-dashboard',
-      version: 7,
+      version: 8,
       exportedAt: new Date().toISOString(),
       usdJpy: usdJpyInput,
       fxUpdatedAt: fxUpdatedAtInput,
@@ -1495,7 +1568,8 @@ export default function PortfolioManagementDashboard() {
         staleData: ['現在価格7日超', 'USD/JPY7日超', '財務データ100日超'],
         unverifiedData: ['取得元名未入力', '根拠URL未入力または不正', '対象決算期未入力または形式不明', 'データ種別未選択', '根拠確認日未入力または未来日'],
         weakEvidence: ['根拠ページ未入力', '引用文・該当数値なし', '引用に数値なし', '参照指標名なし', '単位なし'],
-        mismatchedEvidence: ['引用文内数値と入力値の不一致', '許容差超過', '複数数値引用時は最も近い値で照合'],
+        multipleEvidenceValues: ['引用文に複数数値がある場合は採用証跡値が必須', '採用証跡値が引用文内数値と一致しない場合は判定停止'],
+        mismatchedEvidence: ['採用証跡値と入力値の不一致', '許容差超過'],
       },
     }
     downloadTextFile(JSON.stringify(backup, null, 2), 'portfolio-dashboard-backup.json', 'application/json;charset=utf-8;')
@@ -1550,6 +1624,7 @@ export default function PortfolioManagementDashboard() {
           confirmedAt: holding?.confirmedAt,
           sourcePage: holding?.sourcePage,
           sourceQuote: holding?.sourceQuote,
+          selectedEvidenceValue: holding?.selectedEvidenceValue,
           sourceMetricName: holding?.sourceMetricName,
           sourceUnit: holding?.sourceUnit,
           evidenceMemo: holding?.evidenceMemo,
@@ -1684,10 +1759,11 @@ export default function PortfolioManagementDashboard() {
             </div>
           </div>
 
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-11">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-12">
             <MetricCard label="INVALID" value={portfolioSummary.decisionCounts.INVALID_DATA || 0} subLabel="入力異常" tone="red" />
             <MetricCard label="UNVERIFIED" value={portfolioSummary.decisionCounts.UNVERIFIED_DATA || 0} subLabel="根拠未確認" tone="amber" />
             <MetricCard label="WEAK" value={portfolioSummary.decisionCounts.WEAK_EVIDENCE || 0} subLabel="証跡不足" tone="amber" />
+            <MetricCard label="MULTIPLE" value={portfolioSummary.decisionCounts.MULTIPLE_EVIDENCE_VALUES || 0} subLabel="採用値未指定" tone="amber" />
             <MetricCard label="MISMATCH" value={portfolioSummary.decisionCounts.MISMATCHED_EVIDENCE || 0} subLabel="証跡不一致" tone="red" />
             <MetricCard label="STALE" value={portfolioSummary.decisionCounts.STALE_DATA || 0} subLabel="期限切れ" tone="amber" />
             <MetricCard label="SELL" value={portfolioSummary.decisionCounts.SELL || 0} subLabel="強制売却条件" tone="red" />
@@ -1708,6 +1784,7 @@ export default function PortfolioManagementDashboard() {
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <MetricCard label="根拠未確認合計" value={portfolioSummary.unverifiedStocks.length} subLabel="UNVERIFIED_DATA" tone="amber" />
             <MetricCard label="証跡不足合計" value={portfolioSummary.weakEvidenceStocks.length} subLabel="WEAK_EVIDENCE" tone="amber" />
+            <MetricCard label="採用値未指定" value={portfolioSummary.multipleEvidenceValueStocks.length} subLabel="MULTIPLE_EVIDENCE_VALUES" tone="amber" />
             <MetricCard label="証跡不一致" value={portfolioSummary.mismatchedEvidenceStocks.length} subLabel="MISMATCHED_EVIDENCE" tone="red" />
             <MetricCard label="照合一致" value={portfolioSummary.evidenceMatchedStocks.length} subLabel="引用値=入力値" tone="emerald" />
             <MetricCard label="照合対象外" value={portfolioSummary.evidenceNotApplicableStocks.length} subLabel="指標未対応/値なし" tone="amber" />
@@ -1755,22 +1832,28 @@ export default function PortfolioManagementDashboard() {
                     <li>・根拠ページ未入力</li><li>・引用文・該当数値なし</li><li>・引用に数値なし</li><li>・参照指標名なし</li><li>・単位なし</li>
                   </ul>
                 </div>
+                <div className="rounded-2xl border border-pink-200 bg-pink-50 p-4">
+                  <div className="font-bold text-pink-700 mb-2">MULTIPLE_EVIDENCE_VALUES</div>
+                  <ul className="space-y-1 text-slate-700">
+                    <li>・引用文に複数数値</li><li>・採用証跡値が未入力</li><li>・採用証跡値が引用内数値と不一致</li><li>・判定停止</li>
+                  </ul>
+                </div>
                 <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4">
                   <div className="font-bold text-rose-700 mb-2">MISMATCHED_EVIDENCE</div>
                   <ul className="space-y-1 text-slate-700">
-                    <li>・引用文内の数値と入力値が不一致</li><li>・許容差を超過</li><li>・複数数値は最も近い値で照合</li><li>・不一致時は判定停止</li>
+                    <li>・採用証跡値と入力値が不一致</li><li>・許容差を超過</li><li>・不一致時は判定停止</li>
                   </ul>
                 </div>
               </div>
               <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm font-semibold text-slate-700">
-                入力できるのは数値・事実のみ。判定優先順位は INVALID_DATA → UNVERIFIED_DATA → WEAK_EVIDENCE → MISMATCHED_EVIDENCE → STALE_DATA → NO_DATA → SELL → REDUCE → BUY → HOLD → WATCH。異常値がある場合は売買判定を停止し、人間による上書きは不可。
+                入力できるのは数値・事実のみ。判定優先順位は INVALID_DATA → UNVERIFIED_DATA → WEAK_EVIDENCE → MULTIPLE_EVIDENCE_VALUES → MISMATCHED_EVIDENCE → STALE_DATA → NO_DATA → SELL → REDUCE → BUY → HOLD → WATCH。異常値がある場合は売買判定を停止し、人間による上書きは不可。
               </div>
             </div>
 
             <div className="bg-white/80 backdrop-blur-3xl border border-white/60 rounded-[32px] shadow-[0_20px_60px_rgba(15,23,42,0.08)] p-6">
               <h2 className="text-2xl font-bold text-slate-900 mb-4">要対応リスト</h2>
               {portfolioSummary.criticalStocks.length === 0 ? (
-                <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">INVALID_DATA / UNVERIFIED_DATA / WEAK_EVIDENCE / MISMATCHED_EVIDENCE / STALE_DATA / SELL / REDUCE / NO_DATA はありません。</div>
+                <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">INVALID_DATA / UNVERIFIED_DATA / WEAK_EVIDENCE / MULTIPLE_EVIDENCE_VALUES / MISMATCHED_EVIDENCE / STALE_DATA / SELL / REDUCE / NO_DATA はありません。</div>
               ) : (
                 <div className="space-y-3 max-h-[420px] overflow-auto pr-1">
                   {portfolioSummary.criticalStocks.slice(0, 20).map((stock) => (
@@ -1918,7 +2001,7 @@ export default function PortfolioManagementDashboard() {
               <div className="bg-amber-50 border border-amber-200 rounded-[28px] p-6">
                 <h3 className="font-semibold text-amber-700 mb-3">今回追加したこと</h3>
                 <ul className="space-y-2 text-sm text-slate-700">
-                  <li>・INVALID_DATA / UNVERIFIED_DATA / WEAK_EVIDENCE / MISMATCHED_EVIDENCE / STALE_DATA / BUY / HOLD / WATCH / REDUCE / SELL / NO_DATAの機械判定</li>
+                  <li>・INVALID_DATA / UNVERIFIED_DATA / WEAK_EVIDENCE / MULTIPLE_EVIDENCE_VALUES / MISMATCHED_EVIDENCE / STALE_DATA / BUY / HOLD / WATCH / REDUCE / SELL / NO_DATAの機械判定</li>
                   <li>・入力異常値チェックと異常時の判定停止</li>
                   <li>・UNVERIFIED_DATA判定と根拠未確認時の判定停止</li>
                   <li>・WEAK_EVIDENCE判定と証跡不足時の判定停止</li>
