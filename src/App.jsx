@@ -34,6 +34,74 @@ const formatPercent = (value, digits = 1) => {
   return `${formatNumber(value, digits)}%`
 }
 
+
+const parseCsvLine = (line) => {
+  const cells = []
+  let current = ''
+  let insideQuotes = false
+
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index]
+    const nextChar = line[index + 1]
+
+    if (char === '"' && insideQuotes && nextChar === '"') {
+      current += '"'
+      index += 1
+      continue
+    }
+
+    if (char === '"') {
+      insideQuotes = !insideQuotes
+      continue
+    }
+
+    if (char === ',' && !insideQuotes) {
+      cells.push(current.trim())
+      current = ''
+      continue
+    }
+
+    current += char
+  }
+
+  cells.push(current.trim())
+  return cells
+}
+
+const parseCsvText = (text) => {
+  const normalized = text.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+  const lines = normalized.split('\n').filter((line) => line.trim() !== '')
+  if (lines.length === 0) return { headers: [], rows: [] }
+
+  const headers = parseCsvLine(lines[0]).map((header) => header.trim())
+  const rows = lines.slice(1).map((line) => {
+    const cells = parseCsvLine(line)
+    return headers.reduce((record, header, index) => {
+      record[header] = cells[index] ?? ''
+      return record
+    }, {})
+  })
+
+  return { headers, rows }
+}
+
+const getCsvValue = (row, keys) => {
+  for (const key of keys) {
+    if (row[key] !== undefined) return row[key]
+  }
+  return ''
+}
+
+const isImportableNumber = (value) => {
+  if (value === '' || value === null || value === undefined) return true
+  return Number.isFinite(Number(value)) && Number(value) >= 0
+}
+
+const normalizeImportNumber = (value) => {
+  if (value === '' || value === null || value === undefined) return ''
+  return String(value).replace(/,/g, '').trim()
+}
+
 function FilterButton({ label, active, onClick, activeClass = 'bg-slate-900 text-white border-slate-900' }) {
   return (
     <button
@@ -192,6 +260,7 @@ export default function PortfolioManagementDashboard() {
       return {}
     }
   })
+  const [importMessage, setImportMessage] = useState('')
 
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(holdings))
@@ -339,6 +408,67 @@ export default function PortfolioManagementDashboard() {
     setKeyword('')
   }
 
+  const importCsv = async (event) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+
+    if (!file) return
+
+    try {
+      const text = await file.text()
+      const { headers, rows } = parseCsvText(text)
+      const stockCodeSet = new Set(stocks.map((stock) => stock.code))
+
+      if (!headers.includes('code')) {
+        setImportMessage('CSV取込失敗: code列がありません。CSV出力したファイル形式を使用してください。')
+        return
+      }
+
+      let importedCount = 0
+      let unknownCount = 0
+      let invalidCount = 0
+      const nextHoldings = { ...holdings }
+
+      for (const row of rows) {
+        const code = String(getCsvValue(row, ['code', '銘柄コード'])).trim()
+        if (!code) continue
+
+        if (!stockCodeSet.has(code)) {
+          unknownCount += 1
+          continue
+        }
+
+        const importedHolding = {
+          shares: normalizeImportNumber(getCsvValue(row, ['shares', '保有数'])),
+          averagePrice: normalizeImportNumber(getCsvValue(row, ['averagePrice', '取得単価'])),
+          currentPrice: normalizeImportNumber(getCsvValue(row, ['currentPrice', '現在価格'])),
+          annualDividend: normalizeImportNumber(getCsvValue(row, ['annualDividend', '年間配当'])),
+        }
+
+        const values = Object.values(importedHolding)
+        const isEmpty = values.every((value) => value === '')
+        const isValid = values.every(isImportableNumber)
+
+        if (!isValid) {
+          invalidCount += 1
+          continue
+        }
+
+        if (isEmpty) {
+          delete nextHoldings[code]
+        } else {
+          nextHoldings[code] = importedHolding
+        }
+        importedCount += 1
+      }
+
+      setHoldings(nextHoldings)
+      setImportMessage(`CSV取込完了: ${importedCount}件反映 / 未登録コード ${unknownCount}件 / 数値不正 ${invalidCount}件`)
+    } catch (error) {
+      setImportMessage(`CSV取込失敗: ${error instanceof Error ? error.message : 'ファイルを読み込めませんでした'}`)
+    }
+  }
+
   const exportCsv = () => {
     const header = ['code', 'name', 'market', 'group', 'currency', 'shares', 'averagePrice', 'currentPrice', 'annualDividend', 'marketValueJPY', 'costJPY', 'pnlJPY', 'annualDividendJPY']
     const rows = enrichedStocks.map((stock) => [
@@ -404,7 +534,7 @@ export default function PortfolioManagementDashboard() {
                 ))}
               </div>
 
-              <div className="grid gap-3 md:grid-cols-[1fr_220px_160px_160px] md:items-end">
+              <div className="grid gap-3 md:grid-cols-[1fr_220px_160px_160px_160px] md:items-end">
                 <div className="flex flex-col gap-2">
                   <label className="text-sm font-semibold text-slate-700">ジャンル</label>
                   <select
@@ -428,6 +558,10 @@ export default function PortfolioManagementDashboard() {
                 <button type="button" onClick={exportCsv} className="rounded-2xl border border-slate-900 bg-slate-900 px-4 py-3 text-sm font-semibold text-white transition hover:bg-slate-700">
                   CSV出力
                 </button>
+                <label className="cursor-pointer rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-center text-sm font-semibold text-sky-700 transition hover:bg-sky-100">
+                  CSV取込
+                  <input type="file" accept=".csv,text/csv" onChange={importCsv} className="hidden" />
+                </label>
                 <button type="button" onClick={clearHoldings} className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700 transition hover:bg-red-100">
                   入力全削除
                 </button>
@@ -440,6 +574,12 @@ export default function PortfolioManagementDashboard() {
                 <span className="rounded-full bg-slate-100 px-3 py-1">USD/JPY: {formatNumber(usdJpy, 2)}</span>
                 {keyword && <span className="rounded-full bg-sky-100 px-3 py-1 text-sky-700">検索: {keyword}</span>}
               </div>
+
+              {importMessage && (
+                <div className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm font-semibold text-sky-800">
+                  {importMessage}
+                </div>
+              )}
             </div>
 
             <div className="flex flex-col gap-6 xl:flex-row xl:items-center xl:justify-between">
@@ -548,6 +688,7 @@ export default function PortfolioManagementDashboard() {
                   <li>・USD/JPY手動換算</li>
                   <li>・セクター別評価額</li>
                   <li>・CSV出力</li>
+                  <li>・CSV取込</li>
                   <li>・localStorage保存</li>
                 </ul>
               </div>
