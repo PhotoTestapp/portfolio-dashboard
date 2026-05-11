@@ -8,10 +8,56 @@ const SETTINGS_KEY = 'portfolio-dashboard-settings-v1'
 const HISTORY_KEY = 'portfolio-dashboard-decision-history-v1'
 const AUDIT_KEY = 'portfolio-dashboard-audit-log-v1'
 const INTEGRITY_KEY = 'portfolio-dashboard-integrity-v1'
+const CHECKLIST_KEY = 'portfolio-dashboard-operational-checklist-v1'
+const CHECKLIST_SCHEMA_VERSION = '2026.05-operational-checklist-v1'
 const DEFAULT_USD_JPY = 155
 const DECISION_HISTORY_VERSION = '2026.05-decision-action-v1'
 const AUDIT_LOG_VERSION = '2026.05-audit-log-v1'
 const APP_SCHEMA_VERSION = '2026.05-integrity-v1'
+
+const operationalChecklistDefinitions = [
+  { id: 'daily-price-fx', cadence: 'DAILY', label: '価格・USD/JPY更新', description: '現在価格、USD/JPY、価格更新日を更新し、STALE_DATAを発生させない。', maxAgeDays: 1, impact: 'HIGH' },
+  { id: 'daily-blocking-decisions', cadence: 'DAILY', label: '停止判定確認', description: 'INVALID / UNVERIFIED / WEAK / MULTIPLE / MISMATCH / PROFILE / RULE / STALE / NO_DATAを確認。', maxAgeDays: 1, impact: 'HIGH' },
+  { id: 'daily-sell-reduce', cadence: 'DAILY', label: 'SELL / REDUCE確認', description: 'SELL・REDUCE銘柄を確認し、実行記録または未実行理由を残す。', maxAgeDays: 1, impact: 'HIGH' },
+  { id: 'weekly-evidence-audit', cadence: 'WEEKLY', label: '証跡・監査ログ確認', description: '根拠URL、引用文、採用証跡値、監査ログのHIGH影響変更を確認。', maxAgeDays: 7, impact: 'HIGH' },
+  { id: 'weekly-action-outcome', cadence: 'WEEKLY', label: '実行・結果未入力確認', description: 'actionTrackingとoutcomeEvaluationの未入力履歴を確認。', maxAgeDays: 7, impact: 'MEDIUM' },
+  { id: 'weekly-backup', cadence: 'WEEKLY', label: 'JSONバックアップ保存', description: 'JSON保存を実行し、backupIntegrityHashとlastBackupAtを更新。', maxAgeDays: 7, impact: 'HIGH' },
+  { id: 'monthly-operation-report', cadence: 'MONTHLY', label: '月次運用レポート出力', description: 'Markdown / JSONの運用レポートを出力し、判定・遵守率・成績・完全性を固定。', maxAgeDays: 31, impact: 'HIGH' },
+  { id: 'monthly-rule-review', cadence: 'MONTHLY', label: 'ルール設定確認', description: 'ruleVersion、ruleReviewedAt、閾値、riskRegime、ruleChangeReasonを確認。', maxAgeDays: 31, impact: 'HIGH' },
+  { id: 'monthly-decision-history', cadence: 'MONTHLY', label: '判定履歴保存', description: '現在判定を履歴保存し、バックテスト用スナップショットを残す。', maxAgeDays: 31, impact: 'MEDIUM' },
+  { id: 'quarterly-financial-refresh', cadence: 'QUARTERLY', label: '四半期財務データ更新', description: '配当性向、営業CF、EPS、自己資本比率、業種別専用指標、証跡を更新。', maxAgeDays: 100, impact: 'HIGH' },
+  { id: 'quarterly-profile-metrics', cadence: 'QUARTERLY', label: '業種別専用指標棚卸し', description: 'BANK / REIT / UTILITY / CYCLICAL / GROWTH_TECH / HEALTHCARE / FINANCIALの専用指標を確認。', maxAgeDays: 100, impact: 'MEDIUM' },
+]
+
+const cadenceLabels = {
+  DAILY: '日次',
+  WEEKLY: '週次',
+  MONTHLY: '月次',
+  QUARTERLY: '四半期',
+}
+
+const sanitizeChecklist = (value) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  return Object.fromEntries(Object.entries(value).map(([id, item]) => [id, {
+    completedAt: String(item?.completedAt || ''),
+    note: String(item?.note || ''),
+  }]))
+}
+
+const getChecklistStatus = (definition, entry) => {
+  if (!entry?.completedAt) return { status: 'OVERDUE', ageDays: null, label: '未実施' }
+  const completedDate = new Date(entry.completedAt)
+  if (Number.isNaN(completedDate.getTime())) return { status: 'OVERDUE', ageDays: null, label: '日付不正' }
+  const ageDays = Math.floor((Date.now() - completedDate.getTime()) / 86400000)
+  if (ageDays > definition.maxAgeDays) return { status: 'OVERDUE', ageDays, label: `${ageDays}日経過` }
+  return { status: 'DONE', ageDays, label: ageDays === 0 ? '本日実施' : `${ageDays}日前` }
+}
+
+const checklistTone = {
+  DONE: 'bg-emerald-50 border-emerald-200 text-emerald-800',
+  OVERDUE: 'bg-red-50 border-red-200 text-red-800',
+}
+
 
 const decisionLabels = {
   INVALID_DATA: 'INVALID_DATA',
@@ -839,7 +885,7 @@ const sanitizeIntegrityMeta = (value) => {
   }
 }
 
-const createBackupPayloadForHash = ({ usdJpy, fxUpdatedAt, holdings, decisionHistory, auditLog }) => ({
+const createBackupPayloadForHash = ({ usdJpy, fxUpdatedAt, holdings, decisionHistory, auditLog, operationalChecklist }) => ({
   app: 'portfolio-dashboard',
   schemaVersion: APP_SCHEMA_VERSION,
   usdJpy,
@@ -847,9 +893,10 @@ const createBackupPayloadForHash = ({ usdJpy, fxUpdatedAt, holdings, decisionHis
   holdings,
   decisionHistory,
   auditLog,
+  operationalChecklist,
 })
 
-const buildBackupMeta = ({ payload, stocks, decisionHistory, auditLog }) => {
+const buildBackupMeta = ({ payload, stocks, decisionHistory, auditLog, operationalChecklist }) => {
   const exportedAt = new Date().toISOString()
   return {
     appSchemaVersion: APP_SCHEMA_VERSION,
@@ -859,6 +906,7 @@ const buildBackupMeta = ({ payload, stocks, decisionHistory, auditLog }) => {
     holdingRecordCount: Object.keys(payload.holdings || {}).length,
     decisionHistoryCount: decisionHistory.length,
     auditLogCount: auditLog.length,
+    checklistDoneCount: Object.values(operationalChecklist || {}).filter((item) => item?.completedAt).length,
   }
 }
 
@@ -1945,6 +1993,15 @@ export default function PortfolioManagementDashboard() {
     }
   })
 
+  const [operationalChecklist, setOperationalChecklist] = useState(() => {
+    try {
+      const saved = window.localStorage.getItem(CHECKLIST_KEY)
+      return saved ? sanitizeChecklist(JSON.parse(saved)) : {}
+    } catch {
+      return {}
+    }
+  })
+
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(holdings))
   }, [holdings])
@@ -1964,6 +2021,10 @@ export default function PortfolioManagementDashboard() {
   useEffect(() => {
     window.localStorage.setItem(INTEGRITY_KEY, JSON.stringify(integrityMeta))
   }, [integrityMeta])
+
+  useEffect(() => {
+    window.localStorage.setItem(CHECKLIST_KEY, JSON.stringify(operationalChecklist))
+  }, [operationalChecklist])
 
   const stocks = useMemo(() => normalizeStocks({ sections, businessMap, thesisMap, buyMap, sellMap }), [])
   const allGroups = useMemo(() => [...new Set(stocks.map((stock) => stock.group))], [stocks])
@@ -2292,6 +2353,38 @@ export default function PortfolioManagementDashboard() {
   const auditStats = useMemo(() => buildAuditStats(auditLog), [auditLog])
   const integritySummary = useMemo(() => calculateDataCompleteness({ stocks: enrichedStocks, holdings, decisionHistory, auditLog, settings }), [enrichedStocks, holdings, decisionHistory, auditLog, settings])
 
+  const checklistEntries = useMemo(() => operationalChecklistDefinitions.map((definition) => {
+    const entry = operationalChecklist[definition.id] || {}
+    const status = getChecklistStatus(definition, entry)
+    return {
+      ...definition,
+      ...entry,
+      ...status,
+    }
+  }), [operationalChecklist])
+
+  const checklistStats = useMemo(() => {
+    const overdue = checklistEntries.filter((item) => item.status === 'OVERDUE')
+    const highOverdue = overdue.filter((item) => item.impact === 'HIGH')
+    const done = checklistEntries.filter((item) => item.status === 'DONE')
+    const byCadence = ['DAILY', 'WEEKLY', 'MONTHLY', 'QUARTERLY'].map((cadence) => ({
+      cadence,
+      label: cadenceLabels[cadence],
+      total: checklistEntries.filter((item) => item.cadence === cadence).length,
+      overdue: checklistEntries.filter((item) => item.cadence === cadence && item.status === 'OVERDUE').length,
+      done: checklistEntries.filter((item) => item.cadence === cadence && item.status === 'DONE').length,
+    }))
+    return {
+      total: checklistEntries.length,
+      done: done.length,
+      overdue: overdue.length,
+      highOverdue: highOverdue.length,
+      completionRate: checklistEntries.length > 0 ? (done.length / checklistEntries.length) * 100 : 0,
+      byCadence,
+    }
+  }, [checklistEntries])
+
+
   const appendAuditEntries = (entries) => {
     const normalized = sanitizeAuditLog(Array.isArray(entries) ? entries : [entries])
     if (normalized.length === 0) return
@@ -2530,8 +2623,9 @@ export default function PortfolioManagementDashboard() {
       holdings,
       decisionHistory,
       auditLog,
+      operationalChecklist,
     })
-    const backupMeta = buildBackupMeta({ payload: payloadForHash, stocks, decisionHistory, auditLog })
+    const backupMeta = buildBackupMeta({ payload: payloadForHash, stocks, decisionHistory, auditLog, operationalChecklist })
     const backup = {
       app: 'portfolio-dashboard',
       version: 11,
@@ -2542,6 +2636,8 @@ export default function PortfolioManagementDashboard() {
       holdings,
       decisionHistory,
       auditLog,
+      operationalChecklist,
+      checklistSchemaVersion: CHECKLIST_SCHEMA_VERSION,
       auditLogVersion: AUDIT_LOG_VERSION,
       backupMeta,
       integritySummary,
@@ -2560,6 +2656,7 @@ export default function PortfolioManagementDashboard() {
         decisionHistory: ['判定日時', '入力値スナップショット', 'ポートフォリオ比率', '証跡スナップショットを保存'],
         auditLog: ['変更日時', '銘柄', '項目', '変更前', '変更後', '変更元', '判定変化', '影響度'],
         integrity: ['バックアップハッシュ', '完全性スコア', '履歴件数', '監査ログ件数', '重要項目欠損件数'],
+        operationalChecklist: ['日次', '週次', '月次', '四半期の運用タスク', '期限切れチェック', 'チェックリストCSV出力'],
       },
     }
     setIntegrityMeta((current) => sanitizeIntegrityMeta({
@@ -2586,6 +2683,7 @@ export default function PortfolioManagementDashboard() {
         holdings: parsed?.holdings || {},
         decisionHistory: Array.isArray(parsed?.decisionHistory) ? parsed.decisionHistory : [],
         auditLog: Array.isArray(parsed?.auditLog) ? parsed.auditLog : [],
+        operationalChecklist: sanitizeChecklist(parsed?.operationalChecklist),
       })
       const calculatedRestoreHash = buildIntegrityHash(restoreHashPayload)
       const declaredRestoreHash = parsed?.backupMeta?.backupIntegrityHash ? String(parsed.backupMeta.backupIntegrityHash) : ''
@@ -2696,6 +2794,9 @@ export default function PortfolioManagementDashboard() {
       }
       if (Array.isArray(parsed.decisionHistory)) {
         setDecisionHistory(sanitizeDecisionHistory(parsed.decisionHistory))
+      }
+      if (parsed.operationalChecklist && typeof parsed.operationalChecklist === 'object') {
+        setOperationalChecklist(sanitizeChecklist(parsed.operationalChecklist))
       }
       setImportMessage(`JSON取込完了: ${importedCount}件反映 / 未登録コード ${unknownCount}件 / 数値不正 ${invalidCount}件 / 履歴 ${Array.isArray(parsed.decisionHistory) ? parsed.decisionHistory.length : 0}件 / 復元ハッシュ ${calculatedRestoreHash}${restoreWarnings.length > 0 ? ` / 警告 ${restoreWarnings.length}件` : ''}`)
     } catch (error) {
@@ -2924,6 +3025,12 @@ export default function PortfolioManagementDashboard() {
         csvImport: auditStats.csvImport,
         jsonRestore: auditStats.jsonRestore,
       },
+      operationalChecklist: {
+        schemaVersion: CHECKLIST_SCHEMA_VERSION,
+        stats: checklistStats,
+        overdueItems: checklistEntries.filter((item) => item.status === 'OVERDUE').map((item) => ({ id: item.id, cadence: item.cadence, label: item.label, impact: item.impact, statusLabel: item.label, ageDays: item.ageDays })),
+        entries: checklistEntries,
+      },
       allocation: {
         byMarket: portfolioSummary.byMarket,
         byCurrency: portfolioSummary.byCurrency,
@@ -3011,7 +3118,12 @@ export default function PortfolioManagementDashboard() {
       `## 5. 整合警告\n\n${warnings}\n\n` +
       `## 6. 上位保有銘柄\n\n${topPositionLines}\n\n` +
       `## 7. 要対応銘柄 上位20件\n\n${actionRequiredLines}\n\n` +
-      `## 8. 運用上の制約\n\n` +
+      `## 8. 運用チェックリスト\n\n` +
+      `- 完了率: ${pct(report.operationalChecklist.stats.completionRate)}\n` +
+      `- 期限切れ: ${report.operationalChecklist.stats.overdue}\n` +
+      `- HIGH期限切れ: ${report.operationalChecklist.stats.highOverdue}\n` +
+      `${(report.operationalChecklist.overdueItems || []).slice(0, 20).map((item) => `- ${cadenceLabels[item.cadence] || item.cadence}: ${item.label} / ${item.impact}`).join('\n') || '- 期限切れなし'}\n\n` +
+      `## 9. 運用上の制約\n\n` +
       `- 株価・配当・財務・実行・結果データは手動入力。\n` +
       `- 静的GitHub Pages構成のため、ユーザー認証とサーバー保存は未対応。\n` +
       `- 根拠URL本文と引用文の自動照合は未対応。\n` +
@@ -3027,6 +3139,57 @@ export default function PortfolioManagementDashboard() {
     const date = new Date().toISOString().slice(0, 10)
     downloadTextFile(JSON.stringify(buildOperationalReportData(), null, 2), `portfolio-operation-report-${date}.json`, 'application/json;charset=utf-8;')
   }
+
+  const completeChecklistItem = (id) => {
+    const definition = operationalChecklistDefinitions.find((item) => item.id === id)
+    const now = new Date().toISOString()
+    setOperationalChecklist((current) => ({
+      ...current,
+      [id]: {
+        ...(current[id] || {}),
+        completedAt: now,
+      },
+    }))
+    appendAuditEntries(buildAuditEntry({
+      code: 'SYSTEM',
+      name: '運用チェックリスト',
+      fieldName: `checklist.${id}`,
+      previousValue: operationalChecklist[id]?.completedAt || '',
+      newValue: now,
+      changeSource: 'manual',
+      decisionBefore: definition?.label || '',
+      decisionAfter: 'DONE',
+    }))
+  }
+
+  const resetChecklistItem = (id) => {
+    const definition = operationalChecklistDefinitions.find((item) => item.id === id)
+    setOperationalChecklist((current) => ({
+      ...current,
+      [id]: {
+        ...(current[id] || {}),
+        completedAt: '',
+      },
+    }))
+    appendAuditEntries(buildAuditEntry({
+      code: 'SYSTEM',
+      name: '運用チェックリスト',
+      fieldName: `checklist.${id}`,
+      previousValue: operationalChecklist[id]?.completedAt || '',
+      newValue: '',
+      changeSource: 'manual',
+      decisionBefore: definition?.label || '',
+      decisionAfter: 'RESET',
+    }))
+  }
+
+  const exportChecklistCsv = () => {
+    const header = ['id', 'cadence', 'label', 'impact', 'status', 'lastCompletedAt', 'ageDays', 'description']
+    const rows = checklistEntries.map((item) => [item.id, item.cadence, item.label, item.impact, item.status, item.completedAt || '', item.ageDays ?? '', item.description])
+    const csv = [header, ...rows].map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(',')).join('\n')
+    downloadTextFile(`\uFEFF${csv}`, 'portfolio-operational-checklist.csv', 'text/csv;charset=utf-8;')
+  }
+
 
   const clearAuditLog = () => {
     if (window.confirm('監査ログをすべて削除します。実行しますか？')) {
@@ -3217,6 +3380,51 @@ export default function PortfolioManagementDashboard() {
             </div>
             <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-xs font-semibold text-slate-600">
               出力ファイルは運用会議・月次棚卸し・バックテスト前の固定資料として使用。数値は出力時点のlocalStorage、JSON復元状態、判定履歴、監査ログに依存。
+            </div>
+          </div>
+
+
+
+          <div className="bg-white/80 backdrop-blur-3xl border border-emerald-100 rounded-[32px] shadow-[0_20px_60px_rgba(15,23,42,0.08)] p-6">
+            <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <h2 className="text-2xl font-bold text-slate-900">運用チェックリスト</h2>
+                <p className="text-xs font-semibold text-slate-500">日次・週次・月次・四半期の確認作業を固定。期限切れタスクは運用リスクとして扱う。</p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button type="button" onClick={exportChecklistCsv} className="rounded-2xl border border-emerald-300 bg-emerald-50 px-4 py-2 text-xs font-bold text-emerald-700 hover:bg-emerald-100">チェックリストCSV</button>
+              </div>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <MetricCard label="完了率" value={formatPercent(checklistStats.completionRate)} subLabel={`${checklistStats.done}/${checklistStats.total}件完了`} tone={checklistStats.overdue === 0 ? 'emerald' : 'amber'} />
+              <MetricCard label="期限切れ" value={checklistStats.overdue} subLabel={`HIGH ${checklistStats.highOverdue}件`} tone={checklistStats.overdue > 0 ? 'red' : 'emerald'} />
+              {checklistStats.byCadence.map((item) => (
+                <MetricCard key={item.cadence} label={item.label} value={`${item.done}/${item.total}`} subLabel={`期限切れ ${item.overdue}件`} tone={item.overdue > 0 ? 'amber' : 'emerald'} />
+              ))}
+            </div>
+
+            <div className="mt-5 grid gap-3 xl:grid-cols-2">
+              {checklistEntries.map((item) => (
+                <div key={item.id} className={`rounded-2xl border p-4 ${checklistTone[item.status] || 'bg-slate-50 border-slate-200 text-slate-700'}`}>
+                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="rounded-full border border-white/70 bg-white/60 px-2 py-1 text-[11px] font-bold">{cadenceLabels[item.cadence] || item.cadence}</span>
+                        <span className="rounded-full border border-white/70 bg-white/60 px-2 py-1 text-[11px] font-bold">{item.impact}</span>
+                        <span className="rounded-full border border-white/70 bg-white/60 px-2 py-1 text-[11px] font-bold">{item.status === 'DONE' ? '完了' : '期限切れ'}</span>
+                      </div>
+                      <div className="mt-2 text-sm font-bold text-slate-900">{item.label}</div>
+                      <div className="mt-1 text-xs font-semibold text-slate-600">{item.description}</div>
+                      <div className="mt-2 text-[11px] font-semibold text-slate-500">最終実施: {item.completedAt ? item.completedAt.slice(0, 10) : '未実施'} / {item.status === 'DONE' ? item.label : item.statusLabel}</div>
+                    </div>
+                    <div className="flex shrink-0 gap-2">
+                      <button type="button" onClick={() => completeChecklistItem(item.id)} className="rounded-xl border border-emerald-300 bg-white px-3 py-2 text-[11px] font-bold text-emerald-700 hover:bg-emerald-50">完了</button>
+                      <button type="button" onClick={() => resetChecklistItem(item.id)} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-[11px] font-bold text-slate-600 hover:bg-slate-50">リセット</button>
+                    </div>
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
 
