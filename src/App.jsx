@@ -2842,6 +2842,192 @@ export default function PortfolioManagementDashboard() {
     downloadTextFile(`\uFEFF${csv}`, 'portfolio-audit-log.csv', 'text/csv;charset=utf-8;')
   }
 
+
+  const buildOperationalReportData = () => {
+    const generatedAt = new Date().toISOString()
+    const blockingDecisionKeys = ['INVALID_DATA', 'UNVERIFIED_DATA', 'WEAK_EVIDENCE', 'MULTIPLE_EVIDENCE_VALUES', 'MISMATCHED_EVIDENCE', 'PROFILE_DATA_REQUIRED', 'RULE_CONFIG_REQUIRED', 'STALE_DATA', 'NO_DATA']
+    const blockingTotal = blockingDecisionKeys.reduce((sum, key) => sum + (portfolioSummary.decisionCounts[key] || 0), 0)
+    const actionRequiredKeys = ['SELL', 'REDUCE', ...blockingDecisionKeys]
+    const actionRequiredStocks = enrichedStocks
+      .filter((stock) => actionRequiredKeys.includes(stock.decisionResult?.decision))
+      .map((stock) => ({
+        code: stock.code,
+        name: stock.name,
+        market: stock.market,
+        group: stock.group,
+        ruleProfile: stock.ruleProfile,
+        decision: stock.decisionResult?.decision || 'NO_DATA',
+        severity: stock.decisionResult?.severity || 'HIGH',
+        reasons: safeArray(stock.decisionResult?.reasons).slice(0, 5),
+        marketValueJPY: stock.marketValueJPY,
+        positionWeight: stock.positionWeight,
+        sectorWeight: stock.sectorWeight,
+      }))
+      .slice(0, 50)
+
+    return {
+      generatedAt,
+      appSchemaVersion: APP_SCHEMA_VERSION,
+      ruleVersion: DECISION_HISTORY_VERSION,
+      summary: {
+        displayedStocks: totalCount,
+        registeredStocks: stocks.length,
+        actualHoldingCount: ACTUAL_HOLDING_COUNT,
+        implementationGap: missingCount,
+        positionedCount: portfolioSummary.positionedCount,
+        valuedCount: portfolioSummary.valuedCount,
+        totalMarketValueJPY: portfolioSummary.totalMarketValueJPY,
+        totalCostJPY: portfolioSummary.totalCostJPY,
+        totalPnlJPY: portfolioSummary.totalPnlJPY,
+        unrealizedPnlRate: portfolioSummary.unrealizedPnlRate,
+        totalAnnualDividendJPY: portfolioSummary.totalAnnualDividendJPY,
+        portfolioDividendYield: portfolioSummary.portfolioDividendYield,
+      },
+      decisions: {
+        counts: portfolioSummary.decisionCounts,
+        blockingTotal,
+        actionRequiredTotal: actionRequiredStocks.length,
+      },
+      compliance: {
+        complianceRate: actionStats.complianceRate,
+        notExecuted: actionStats.notExecuted,
+        contradicted: actionStats.contradicted,
+        nonCompliant: actionStats.nonCompliant,
+        averageExecutionGapDays: actionStats.averageExecutionGapDays,
+        averageExecutionPriceGap: actionStats.averageExecutionPriceGap,
+      },
+      outcomes: {
+        evaluated: outcomeStats.evaluated,
+        pending: outcomeStats.pending,
+        success: outcomeStats.success,
+        failure: outcomeStats.failure,
+        missedOpportunity: outcomeStats.missedOpportunity,
+        successRate: outcomeStats.successRate,
+        failureRate: outcomeStats.failureRate,
+      },
+      integrity: {
+        dataCompletenessScore: integritySummary.dataCompletenessScore,
+        missingCriticalFieldCount: integritySummary.missingCriticalFieldCount,
+        integrityWarnings: [...(integrityMeta.integrityWarnings || []), ...integritySummary.integrityWarnings],
+        backupIntegrityHash: integrityMeta.backupIntegrityHash || '',
+        lastBackupAt: integrityMeta.lastBackupAt || '',
+        restoreSourceHash: integrityMeta.restoreSourceHash || '',
+        lastRestoreAt: integrityMeta.lastRestoreAt || '',
+        decisionHistoryCount: integritySummary.decisionHistoryCount,
+        auditLogCount: integritySummary.auditLogCount,
+      },
+      audit: {
+        total: auditStats.total,
+        last24h: auditStats.last24h,
+        highImpact: auditStats.high,
+        decisionChanged: auditStats.decisionChanged,
+        csvImport: auditStats.csvImport,
+        jsonRestore: auditStats.jsonRestore,
+      },
+      allocation: {
+        byMarket: portfolioSummary.byMarket,
+        byCurrency: portfolioSummary.byCurrency,
+        byGroup: portfolioSummary.byGroup?.slice(0, 10),
+        byRuleProfile: portfolioSummary.byRuleProfile,
+        topPositions: portfolioSummary.topPositions?.slice(0, 10).map((stock) => ({
+          code: stock.code,
+          name: stock.name,
+          group: stock.group,
+          marketValueJPY: stock.marketValueJPY,
+          positionWeight: stock.positionWeight,
+          pnlJPY: stock.pnlJPY,
+        })),
+      },
+      actionRequiredStocks,
+      latestHistoryRun: latestHistoryRun ? {
+        decisionDate: latestHistoryRun.decisionDate,
+        total: latestHistoryRun.total,
+        ruleVersion: latestHistoryRun.ruleVersion,
+        counts: latestHistoryRun.counts,
+      } : null,
+    }
+  }
+
+  const buildOperationalReportMarkdown = () => {
+    const report = buildOperationalReportData()
+    const yen = (value) => Number.isFinite(Number(value)) ? `${formatNumber(Number(value), 0)}円` : '未算出'
+    const pct = (value) => Number.isFinite(Number(value)) ? formatPercent(Number(value)) : '未算出'
+    const decisionLines = Object.entries(report.decisions.counts || {})
+      .filter(([, count]) => Number(count) > 0)
+      .map(([key, count]) => `- ${key}: ${count}`)
+      .join('\n') || '- 該当なし'
+    const topPositionLines = (report.allocation.topPositions || [])
+      .map((item, index) => `${index + 1}. ${item.code} ${item.name}: ${yen(item.marketValueJPY)} / 比率 ${pct(item.positionWeight)} / 損益 ${yen(item.pnlJPY)}`)
+      .join('\n') || '該当なし'
+    const actionRequiredLines = (report.actionRequiredStocks || [])
+      .slice(0, 20)
+      .map((item) => `- ${item.code} ${item.name}: ${item.decision} / ${item.severity} / ${item.reasons.join('、') || '理由なし'}`)
+      .join('\n') || '- 該当なし'
+    const warnings = (report.integrity.integrityWarnings || [])
+      .slice(0, 20)
+      .map((item) => `- ${item}`)
+      .join('\n') || '- なし'
+
+    return `# Portfolio Dashboard 運用レポート\n\n` +
+      `- 生成日時: ${report.generatedAt}\n` +
+      `- Schema: ${report.appSchemaVersion}\n` +
+      `- Rule Version: ${report.ruleVersion}\n\n` +
+      `## 1. 資産サマリー\n\n` +
+      `- 評価額: ${yen(report.summary.totalMarketValueJPY)}\n` +
+      `- 取得額: ${yen(report.summary.totalCostJPY)}\n` +
+      `- 含み損益: ${yen(report.summary.totalPnlJPY)} / ${pct(report.summary.unrealizedPnlRate)}\n` +
+      `- 年間配当見込: ${yen(report.summary.totalAnnualDividendJPY)}\n` +
+      `- ポートフォリオ配当利回り: ${pct(report.summary.portfolioDividendYield)}\n` +
+      `- 保有入力済み銘柄: ${report.summary.positionedCount}\n` +
+      `- 評価可能銘柄: ${report.summary.valuedCount}\n\n` +
+      `## 2. 判定サマリー\n\n` +
+      `${decisionLines}\n\n` +
+      `- 判定停止系合計: ${report.decisions.blockingTotal}\n` +
+      `- 要対応銘柄数: ${report.decisions.actionRequiredTotal}\n\n` +
+      `## 3. 実行遵守・成績\n\n` +
+      `- 判定遵守率: ${pct(report.compliance.complianceRate)}\n` +
+      `- 未実行: ${report.compliance.notExecuted}\n` +
+      `- 逆行実行: ${report.compliance.contradicted}\n` +
+      `- 非遵守: ${report.compliance.nonCompliant}\n` +
+      `- 平均実行遅延: ${formatNumber(report.compliance.averageExecutionGapDays, 1)}日\n` +
+      `- 平均実行価格乖離: ${pct(report.compliance.averageExecutionPriceGap)}\n` +
+      `- 評価済み履歴: ${report.outcomes.evaluated}\n` +
+      `- 未評価履歴: ${report.outcomes.pending}\n` +
+      `- SUCCESS率: ${pct(report.outcomes.successRate)}\n` +
+      `- FAILURE率: ${pct(report.outcomes.failureRate)}\n` +
+      `- 機会損失: ${report.outcomes.missedOpportunity}\n\n` +
+      `## 4. データ完全性・監査\n\n` +
+      `- 完全性スコア: ${report.integrity.dataCompletenessScore}/100\n` +
+      `- 欠損クリティカル: ${report.integrity.missingCriticalFieldCount}\n` +
+      `- 判定履歴件数: ${report.integrity.decisionHistoryCount}\n` +
+      `- 監査ログ件数: ${report.integrity.auditLogCount}\n` +
+      `- 直近24時間変更: ${report.audit.last24h}\n` +
+      `- HIGH影響変更: ${report.audit.highImpact}\n` +
+      `- 判定変化変更: ${report.audit.decisionChanged}\n` +
+      `- 最終JSON保存: ${report.integrity.lastBackupAt || '未保存'}\n` +
+      `- 保存Hash: ${report.integrity.backupIntegrityHash || 'なし'}\n` +
+      `- 最終JSON復元: ${report.integrity.lastRestoreAt || '未復元'}\n` +
+      `- 復元Hash: ${report.integrity.restoreSourceHash || 'なし'}\n\n` +
+      `## 5. 整合警告\n\n${warnings}\n\n` +
+      `## 6. 上位保有銘柄\n\n${topPositionLines}\n\n` +
+      `## 7. 要対応銘柄 上位20件\n\n${actionRequiredLines}\n\n` +
+      `## 8. 運用上の制約\n\n` +
+      `- 株価・配当・財務・実行・結果データは手動入力。\n` +
+      `- 静的GitHub Pages構成のため、ユーザー認証とサーバー保存は未対応。\n` +
+      `- 根拠URL本文と引用文の自動照合は未対応。\n` +
+      `- レポートは出力時点のlocalStorageデータに依存。\n`
+  }
+
+  const exportOperationalReportMarkdown = () => {
+    const date = new Date().toISOString().slice(0, 10)
+    downloadTextFile(buildOperationalReportMarkdown(), `portfolio-operation-report-${date}.md`, 'text/markdown;charset=utf-8;')
+  }
+
+  const exportOperationalReportJson = () => {
+    const date = new Date().toISOString().slice(0, 10)
+    downloadTextFile(JSON.stringify(buildOperationalReportData(), null, 2), `portfolio-operation-report-${date}.json`, 'application/json;charset=utf-8;')
+  }
+
   const clearAuditLog = () => {
     if (window.confirm('監査ログをすべて削除します。実行しますか？')) {
       setAuditLog([])
@@ -2942,6 +3128,8 @@ export default function PortfolioManagementDashboard() {
                 <button type="button" onClick={saveDecisionHistorySnapshot} className="rounded-2xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700 hover:bg-emerald-100">現在判定を履歴保存</button>
                 <button type="button" onClick={exportDecisionHistoryCsv} className="rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50">履歴CSV出力</button>
                 <button type="button" onClick={exportAuditLogCsv} className="rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50">監査ログCSV出力</button>
+                <button type="button" onClick={exportOperationalReportMarkdown} className="rounded-2xl border border-blue-300 bg-blue-50 px-4 py-3 text-sm font-semibold text-blue-700 hover:bg-blue-100">運用レポートMD</button>
+                <button type="button" onClick={exportOperationalReportJson} className="rounded-2xl border border-blue-300 bg-white px-4 py-3 text-sm font-semibold text-blue-700 hover:bg-blue-50">運用レポートJSON</button>
                 <button type="button" onClick={clearAuditLog} className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700 hover:bg-rose-100">監査ログ削除</button>
                 <button type="button" onClick={clearDecisionHistory} className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700 hover:bg-rose-100">履歴削除</button>
                 <button type="button" onClick={clearHoldings} className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700 hover:bg-red-100">入力削除</button>
@@ -3008,6 +3196,28 @@ export default function PortfolioManagementDashboard() {
             <MetricCard label="完全性スコア" value={`${integritySummary.dataCompletenessScore}/100`} subLabel={`欠損 ${integritySummary.missingCriticalFieldCount}件`} tone={integritySummary.dataCompletenessScore >= 80 ? 'emerald' : integritySummary.dataCompletenessScore >= 50 ? 'amber' : 'red'} />
             <MetricCard label="最終JSON保存" value={integrityMeta.lastBackupAt ? integrityMeta.lastBackupAt.slice(0, 10) : '未保存'} subLabel={integrityMeta.backupIntegrityHash || 'hashなし'} tone="sky" />
             <MetricCard label="最終JSON復元" value={integrityMeta.lastRestoreAt ? integrityMeta.lastRestoreAt.slice(0, 10) : '未復元'} subLabel={integrityMeta.restoreSourceHash || 'hashなし'} tone={integrityMeta.restoreStatus === 'RESTORED_WITH_WARNINGS' ? 'amber' : 'slate'} />
+          </div>
+
+          <div className="bg-white/80 backdrop-blur-3xl border border-blue-100 rounded-[32px] shadow-[0_20px_60px_rgba(15,23,42,0.08)] p-6">
+            <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <h2 className="text-2xl font-bold text-slate-900">運用レポート</h2>
+                <p className="text-xs font-semibold text-slate-500">資産サマリー、判定、遵守率、成績、完全性、要対応銘柄を1ファイルで出力。</p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button type="button" onClick={exportOperationalReportMarkdown} className="rounded-2xl border border-blue-300 bg-blue-50 px-4 py-2 text-xs font-bold text-blue-700 hover:bg-blue-100">Markdown出力</button>
+                <button type="button" onClick={exportOperationalReportJson} className="rounded-2xl border border-blue-300 bg-white px-4 py-2 text-xs font-bold text-blue-700 hover:bg-blue-50">JSON出力</button>
+              </div>
+            </div>
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <MetricCard label="要対応銘柄" value={portfolioSummary.criticalStocks.length} subLabel="停止判定・SELL・REDUCE" tone={portfolioSummary.criticalStocks.length > 0 ? 'red' : 'emerald'} />
+              <MetricCard label="判定停止系" value={['INVALID_DATA','UNVERIFIED_DATA','WEAK_EVIDENCE','MULTIPLE_EVIDENCE_VALUES','MISMATCHED_EVIDENCE','PROFILE_DATA_REQUIRED','RULE_CONFIG_REQUIRED','STALE_DATA','NO_DATA'].reduce((sum, key) => sum + (portfolioSummary.decisionCounts[key] || 0), 0)} subLabel="通常判定前に停止" tone="amber" />
+              <MetricCard label="成績評価" value={`${outcomeStats.evaluated}/${decisionHistory.length}`} subLabel={`SUCCESS率 ${formatPercent(outcomeStats.successRate)}`} tone="emerald" />
+              <MetricCard label="遵守状況" value={formatPercent(actionStats.complianceRate)} subLabel={`未実行 ${actionStats.notExecuted} / 逆行 ${actionStats.contradicted}`} tone={actionStats.notExecuted + actionStats.contradicted > 0 ? 'amber' : 'emerald'} />
+            </div>
+            <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-xs font-semibold text-slate-600">
+              出力ファイルは運用会議・月次棚卸し・バックテスト前の固定資料として使用。数値は出力時点のlocalStorage、JSON復元状態、判定履歴、監査ログに依存。
+            </div>
           </div>
 
           <div className="bg-white/80 backdrop-blur-3xl border border-white/60 rounded-[32px] shadow-[0_20px_60px_rgba(15,23,42,0.08)] p-6">
