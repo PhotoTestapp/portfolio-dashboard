@@ -7,9 +7,11 @@ const STORAGE_KEY = 'portfolio-dashboard-holdings-v1'
 const SETTINGS_KEY = 'portfolio-dashboard-settings-v1'
 const HISTORY_KEY = 'portfolio-dashboard-decision-history-v1'
 const AUDIT_KEY = 'portfolio-dashboard-audit-log-v1'
+const INTEGRITY_KEY = 'portfolio-dashboard-integrity-v1'
 const DEFAULT_USD_JPY = 155
 const DECISION_HISTORY_VERSION = '2026.05-decision-action-v1'
 const AUDIT_LOG_VERSION = '2026.05-audit-log-v1'
+const APP_SCHEMA_VERSION = '2026.05-integrity-v1'
 
 const decisionLabels = {
   INVALID_DATA: 'INVALID_DATA',
@@ -786,6 +788,141 @@ const downloadTextFile = (content, filename, type) => {
   link.download = filename
   link.click()
   URL.revokeObjectURL(url)
+}
+
+
+const stableStringify = (value) => {
+  const seen = new WeakSet()
+  const normalize = (item) => {
+    if (item === null || typeof item !== 'object') return item
+    if (seen.has(item)) return null
+    seen.add(item)
+    if (Array.isArray(item)) return item.map(normalize)
+    return Object.keys(item).sort().reduce((acc, key) => {
+      if (item[key] !== undefined) acc[key] = normalize(item[key])
+      return acc
+    }, {})
+  }
+  return JSON.stringify(normalize(value))
+}
+
+const hashString = (input) => {
+  let hash = 2166136261
+  const text = String(input || '')
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0')
+}
+
+const buildIntegrityHash = (payload) => hashString(stableStringify(payload))
+
+const sanitizeIntegrityMeta = (value) => {
+  if (!value || typeof value !== 'object') {
+    return {
+      backupIntegrityHash: '',
+      lastBackupAt: '',
+      lastRestoreAt: '',
+      restoreSourceHash: '',
+      restoreStatus: '',
+      integrityWarnings: [],
+    }
+  }
+  return {
+    backupIntegrityHash: String(value.backupIntegrityHash || ''),
+    lastBackupAt: String(value.lastBackupAt || ''),
+    lastRestoreAt: String(value.lastRestoreAt || ''),
+    restoreSourceHash: String(value.restoreSourceHash || ''),
+    restoreStatus: String(value.restoreStatus || ''),
+    integrityWarnings: safeArray(value.integrityWarnings).map(String).slice(0, 20),
+  }
+}
+
+const createBackupPayloadForHash = ({ usdJpy, fxUpdatedAt, holdings, decisionHistory, auditLog }) => ({
+  app: 'portfolio-dashboard',
+  schemaVersion: APP_SCHEMA_VERSION,
+  usdJpy,
+  fxUpdatedAt,
+  holdings,
+  decisionHistory,
+  auditLog,
+})
+
+const buildBackupMeta = ({ payload, stocks, decisionHistory, auditLog }) => {
+  const exportedAt = new Date().toISOString()
+  return {
+    appSchemaVersion: APP_SCHEMA_VERSION,
+    backupIntegrityHash: buildIntegrityHash(payload),
+    lastBackupAt: exportedAt,
+    stockCount: stocks.length,
+    holdingRecordCount: Object.keys(payload.holdings || {}).length,
+    decisionHistoryCount: decisionHistory.length,
+    auditLogCount: auditLog.length,
+  }
+}
+
+const isFilled = (value) => value !== undefined && value !== null && String(value).trim() !== ''
+
+const calculateDataCompleteness = ({ stocks, holdings, decisionHistory, auditLog, settings }) => {
+  const scoreParts = {
+    position: { points: 20, total: 0, filled: 0 },
+    financial: { points: 20, total: 0, filled: 0 },
+    evidence: { points: 20, total: 0, filled: 0 },
+    freshness: { points: 15, total: 0, filled: 0 },
+    profile: { points: 10, total: 0, filled: 0 },
+    history: { points: 5, total: 1, filled: decisionHistory.length > 0 ? 1 : 0 },
+    actionOutcome: { points: 5, total: 1, filled: decisionHistory.some((item) => item.actionTaken || item.outcomeDate) ? 1 : 0 },
+    audit: { points: 5, total: 1, filled: auditLog.length > 0 ? 1 : 0 },
+  }
+
+  const requiredBySection = {
+    position: ['shares', 'averagePrice', 'currentPrice', 'annualDividend'],
+    financial: ['payoutRatio', 'operatingCashFlowYoY', 'revenueYoY', 'epsYoY', 'equityRatio', 'debtToEquity', 'dividendCut'],
+    evidence: ['sourceName', 'sourceUrl', 'fiscalPeriod', 'dataType', 'confirmedAt', 'sourcePage', 'sourceQuote', 'sourceMetricName', 'sourceUnit'],
+    freshness: ['priceUpdatedAt', 'financialUpdatedAt'],
+    profile: ['ruleProfile'],
+  }
+
+  const missingCriticalFields = []
+  for (const stock of stocks) {
+    const holding = holdings[stock.code] || {}
+    for (const [section, fields] of Object.entries(requiredBySection)) {
+      for (const field of fields) {
+        scoreParts[section].total += 1
+        if (isFilled(holding[field])) scoreParts[section].filled += 1
+        else missingCriticalFields.push(`${stock.code}:${field}`)
+      }
+    }
+  }
+
+  scoreParts.freshness.total += 1
+  if (isFilled(settings.fxUpdatedAt)) scoreParts.freshness.filled += 1
+  else missingCriticalFields.push('SYSTEM:fxUpdatedAt')
+
+  let score = 0
+  for (const part of Object.values(scoreParts)) {
+    score += part.total > 0 ? (part.filled / part.total) * part.points : 0
+  }
+
+  const decisionHistoryCount = decisionHistory.length
+  const auditLogCount = auditLog.length
+  const integrityWarnings = []
+  if (decisionHistoryCount === 0) integrityWarnings.push('判定履歴が未保存')
+  if (auditLogCount === 0) integrityWarnings.push('監査ログが未作成')
+  if (!isFilled(settings.fxUpdatedAt)) integrityWarnings.push('USD/JPY更新日が未入力')
+  if (missingCriticalFields.length > 0) integrityWarnings.push(`重要項目欠損 ${missingCriticalFields.length}件`)
+
+  return {
+    dataCompletenessScore: Math.round(score),
+    missingCriticalFieldCount: missingCriticalFields.length,
+    missingCriticalFields: missingCriticalFields.slice(0, 20),
+    integrityWarnings,
+    decisionHistoryCount,
+    auditLogCount,
+    stockCount: stocks.length,
+    holdingRecordCount: Object.keys(holdings || {}).length,
+  }
 }
 
 const safeArray = (value) => Array.isArray(value) ? value : []
@@ -1799,6 +1936,14 @@ export default function PortfolioManagementDashboard() {
       return []
     }
   })
+  const [integrityMeta, setIntegrityMeta] = useState(() => {
+    try {
+      const saved = window.localStorage.getItem(INTEGRITY_KEY)
+      return saved ? sanitizeIntegrityMeta(JSON.parse(saved)) : sanitizeIntegrityMeta(null)
+    } catch {
+      return sanitizeIntegrityMeta(null)
+    }
+  })
 
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(holdings))
@@ -1815,6 +1960,10 @@ export default function PortfolioManagementDashboard() {
   useEffect(() => {
     window.localStorage.setItem(AUDIT_KEY, JSON.stringify(auditLog))
   }, [auditLog])
+
+  useEffect(() => {
+    window.localStorage.setItem(INTEGRITY_KEY, JSON.stringify(integrityMeta))
+  }, [integrityMeta])
 
   const stocks = useMemo(() => normalizeStocks({ sections, businessMap, thesisMap, buyMap, sellMap }), [])
   const allGroups = useMemo(() => [...new Set(stocks.map((stock) => stock.group))], [stocks])
@@ -2141,6 +2290,7 @@ export default function PortfolioManagementDashboard() {
   }, [decisionHistory])
   const stockByCode = useMemo(() => new Map(enrichedStocks.map((stock) => [stock.code, stock])), [enrichedStocks])
   const auditStats = useMemo(() => buildAuditStats(auditLog), [auditLog])
+  const integritySummary = useMemo(() => calculateDataCompleteness({ stocks: enrichedStocks, holdings, decisionHistory, auditLog, settings }), [enrichedStocks, holdings, decisionHistory, auditLog, settings])
 
   const appendAuditEntries = (entries) => {
     const normalized = sanitizeAuditLog(Array.isArray(entries) ? entries : [entries])
@@ -2374,16 +2524,27 @@ export default function PortfolioManagementDashboard() {
   }
 
   const exportJson = () => {
+    const payloadForHash = createBackupPayloadForHash({
+      usdJpy: usdJpyInput,
+      fxUpdatedAt: fxUpdatedAtInput,
+      holdings,
+      decisionHistory,
+      auditLog,
+    })
+    const backupMeta = buildBackupMeta({ payload: payloadForHash, stocks, decisionHistory, auditLog })
     const backup = {
       app: 'portfolio-dashboard',
-      version: 10,
-      exportedAt: new Date().toISOString(),
+      version: 11,
+      schemaVersion: APP_SCHEMA_VERSION,
+      exportedAt: backupMeta.lastBackupAt,
       usdJpy: usdJpyInput,
       fxUpdatedAt: fxUpdatedAtInput,
       holdings,
       decisionHistory,
       auditLog,
       auditLogVersion: AUDIT_LOG_VERSION,
+      backupMeta,
+      integritySummary,
       rules: {
         sell: ['減配あり', '配当性向100%以上', '営業CF前年比-30%以下', 'EPS前年比-30%以下', '自己資本比率20%未満', '有利子負債倍率5倍以上'],
         reduce: ['個別銘柄比率8%以上', '同一セクター比率25%以上', '配当性向80%以上', '営業CF前年比-15%以下', '含み損-20%以下'],
@@ -2398,8 +2559,15 @@ export default function PortfolioManagementDashboard() {
         decisionHistoryVersion: DECISION_HISTORY_VERSION,
         decisionHistory: ['判定日時', '入力値スナップショット', 'ポートフォリオ比率', '証跡スナップショットを保存'],
         auditLog: ['変更日時', '銘柄', '項目', '変更前', '変更後', '変更元', '判定変化', '影響度'],
+        integrity: ['バックアップハッシュ', '完全性スコア', '履歴件数', '監査ログ件数', '重要項目欠損件数'],
       },
     }
+    setIntegrityMeta((current) => sanitizeIntegrityMeta({
+      ...current,
+      backupIntegrityHash: backupMeta.backupIntegrityHash,
+      lastBackupAt: backupMeta.lastBackupAt,
+      integrityWarnings: integritySummary.integrityWarnings,
+    }))
     downloadTextFile(JSON.stringify(backup, null, 2), 'portfolio-dashboard-backup.json', 'application/json;charset=utf-8;')
   }
 
@@ -2412,6 +2580,20 @@ export default function PortfolioManagementDashboard() {
     try {
       const text = await file.text()
       const parsed = JSON.parse(text)
+      const restoreHashPayload = createBackupPayloadForHash({
+        usdJpy: parsed?.usdJpy ?? '',
+        fxUpdatedAt: parsed?.fxUpdatedAt ?? '',
+        holdings: parsed?.holdings || {},
+        decisionHistory: Array.isArray(parsed?.decisionHistory) ? parsed.decisionHistory : [],
+        auditLog: Array.isArray(parsed?.auditLog) ? parsed.auditLog : [],
+      })
+      const calculatedRestoreHash = buildIntegrityHash(restoreHashPayload)
+      const declaredRestoreHash = parsed?.backupMeta?.backupIntegrityHash ? String(parsed.backupMeta.backupIntegrityHash) : ''
+      const restoreWarnings = []
+      if (declaredRestoreHash && declaredRestoreHash !== calculatedRestoreHash) {
+        restoreWarnings.push(`バックアップハッシュ不一致: declared=${declaredRestoreHash} calculated=${calculatedRestoreHash}`)
+      }
+      if (!declaredRestoreHash) restoreWarnings.push('バックアップハッシュなし')
       const importedHoldings = parsed?.holdings
 
       if (!importedHoldings || typeof importedHoldings !== 'object' || Array.isArray(importedHoldings)) {
@@ -2483,6 +2665,24 @@ export default function PortfolioManagementDashboard() {
           }
         }
       }
+      const restoreAt = new Date().toISOString()
+      auditEntries.unshift(buildAuditEntry({
+        code: 'SYSTEM',
+        name: 'バックアップ復元',
+        fieldName: 'restoreSourceHash',
+        previousValue: integrityMeta.restoreSourceHash || '',
+        newValue: calculatedRestoreHash,
+        changeSource: 'json_restore',
+        decisionBefore: integrityMeta.restoreStatus || '',
+        decisionAfter: restoreWarnings.length > 0 ? 'RESTORED_WITH_WARNINGS' : 'RESTORED',
+      }))
+      setIntegrityMeta((current) => sanitizeIntegrityMeta({
+        ...current,
+        lastRestoreAt: restoreAt,
+        restoreSourceHash: calculatedRestoreHash,
+        restoreStatus: restoreWarnings.length > 0 ? 'RESTORED_WITH_WARNINGS' : 'RESTORED',
+        integrityWarnings: restoreWarnings,
+      }))
       setHoldings(nextHoldings)
       appendAuditEntries(auditEntries)
       if (Array.isArray(parsed.auditLog)) {
@@ -2497,7 +2697,7 @@ export default function PortfolioManagementDashboard() {
       if (Array.isArray(parsed.decisionHistory)) {
         setDecisionHistory(sanitizeDecisionHistory(parsed.decisionHistory))
       }
-      setImportMessage(`JSON取込完了: ${importedCount}件反映 / 未登録コード ${unknownCount}件 / 数値不正 ${invalidCount}件 / 履歴 ${Array.isArray(parsed.decisionHistory) ? parsed.decisionHistory.length : 0}件`)
+      setImportMessage(`JSON取込完了: ${importedCount}件反映 / 未登録コード ${unknownCount}件 / 数値不正 ${invalidCount}件 / 履歴 ${Array.isArray(parsed.decisionHistory) ? parsed.decisionHistory.length : 0}件 / 復元ハッシュ ${calculatedRestoreHash}${restoreWarnings.length > 0 ? ` / 警告 ${restoreWarnings.length}件` : ''}`)
     } catch (error) {
       setImportMessage(`JSON取込失敗: ${error instanceof Error ? error.message : 'ファイルを読み込めませんでした'}`)
     }
@@ -2805,6 +3005,41 @@ export default function PortfolioManagementDashboard() {
             <MetricCard label="監査ログ" value={auditStats.total} subLabel={`24時間 ${auditStats.last24h}件`} tone="sky" />
             <MetricCard label="HIGH影響変更" value={auditStats.high} subLabel={`判定変化 ${auditStats.decisionChanged}件`} tone="red" />
             <MetricCard label="CSV/JSON変更" value={auditStats.csvImport + auditStats.jsonRestore} subLabel={`CSV ${auditStats.csvImport} / JSON ${auditStats.jsonRestore}`} tone="amber" />
+            <MetricCard label="完全性スコア" value={`${integritySummary.dataCompletenessScore}/100`} subLabel={`欠損 ${integritySummary.missingCriticalFieldCount}件`} tone={integritySummary.dataCompletenessScore >= 80 ? 'emerald' : integritySummary.dataCompletenessScore >= 50 ? 'amber' : 'red'} />
+            <MetricCard label="最終JSON保存" value={integrityMeta.lastBackupAt ? integrityMeta.lastBackupAt.slice(0, 10) : '未保存'} subLabel={integrityMeta.backupIntegrityHash || 'hashなし'} tone="sky" />
+            <MetricCard label="最終JSON復元" value={integrityMeta.lastRestoreAt ? integrityMeta.lastRestoreAt.slice(0, 10) : '未復元'} subLabel={integrityMeta.restoreSourceHash || 'hashなし'} tone={integrityMeta.restoreStatus === 'RESTORED_WITH_WARNINGS' ? 'amber' : 'slate'} />
+          </div>
+
+          <div className="bg-white/80 backdrop-blur-3xl border border-white/60 rounded-[32px] shadow-[0_20px_60px_rgba(15,23,42,0.08)] p-6">
+            <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+              <div>
+                <h2 className="text-2xl font-bold text-slate-900">データ完全性チェック</h2>
+                <p className="text-xs font-semibold text-slate-500">JSON保存時ハッシュ、復元元ハッシュ、重要項目欠損、履歴・監査ログ件数を監視。</p>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2 text-xs font-bold text-slate-600">Schema: {APP_SCHEMA_VERSION}</div>
+            </div>
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <MetricCard label="完全性スコア" value={`${integritySummary.dataCompletenessScore}/100`} subLabel="重要項目入力率" tone={integritySummary.dataCompletenessScore >= 80 ? 'emerald' : integritySummary.dataCompletenessScore >= 50 ? 'amber' : 'red'} />
+              <MetricCard label="欠損クリティカル" value={integritySummary.missingCriticalFieldCount} subLabel={integritySummary.missingCriticalFields.slice(0, 2).join(' / ') || 'なし'} tone={integritySummary.missingCriticalFieldCount > 0 ? 'red' : 'emerald'} />
+              <MetricCard label="判定履歴件数" value={integritySummary.decisionHistoryCount} subLabel="backup meta対象" tone="sky" />
+              <MetricCard label="監査ログ件数" value={integritySummary.auditLogCount} subLabel="backup meta対象" tone="sky" />
+              <MetricCard label="保持銘柄件数" value={integritySummary.holdingRecordCount} subLabel={`登録銘柄 ${integritySummary.stockCount}`} />
+              <MetricCard label="JSON保存Hash" value={integrityMeta.backupIntegrityHash || 'なし'} subLabel={integrityMeta.lastBackupAt || '未保存'} tone="sky" />
+              <MetricCard label="JSON復元Hash" value={integrityMeta.restoreSourceHash || 'なし'} subLabel={integrityMeta.lastRestoreAt || '未復元'} tone={integrityMeta.restoreStatus === 'RESTORED_WITH_WARNINGS' ? 'amber' : 'slate'} />
+              <MetricCard label="整合警告" value={(integrityMeta.integrityWarnings || []).length + integritySummary.integrityWarnings.length} subLabel={[...(integrityMeta.integrityWarnings || []), ...integritySummary.integrityWarnings].slice(0, 1).join('') || 'なし'} tone={(integrityMeta.integrityWarnings || []).length + integritySummary.integrityWarnings.length > 0 ? 'amber' : 'emerald'} />
+            </div>
+            {(integritySummary.missingCriticalFields.length > 0 || integritySummary.integrityWarnings.length > 0 || (integrityMeta.integrityWarnings || []).length > 0) && (
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-xs font-semibold text-amber-800">
+                  <div className="mb-2 text-sm font-bold">整合警告</div>
+                  {[...(integrityMeta.integrityWarnings || []), ...integritySummary.integrityWarnings].slice(0, 8).map((item) => <div key={item}>・{item}</div>)}
+                </div>
+                <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-xs font-semibold text-red-800">
+                  <div className="mb-2 text-sm font-bold">欠損項目サンプル</div>
+                  {integritySummary.missingCriticalFields.slice(0, 8).map((item) => <div key={item}>・{item}</div>)}
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="bg-white/80 backdrop-blur-3xl border border-white/60 rounded-[32px] shadow-[0_20px_60px_rgba(15,23,42,0.08)] p-6">
