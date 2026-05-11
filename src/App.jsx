@@ -826,6 +826,97 @@ const buildAuditEntry = ({ code = 'SYSTEM', name = '', fieldName, previousValue 
   impactLevel: getAuditImpactLevel(fieldName, previousValue, newValue, decisionBefore, decisionAfter),
 })
 
+
+const blockingDecisionSet = new Set([
+  'INVALID_DATA',
+  'UNVERIFIED_DATA',
+  'WEAK_EVIDENCE',
+  'MULTIPLE_EVIDENCE_VALUES',
+  'MISMATCHED_EVIDENCE',
+  'PROFILE_DATA_REQUIRED',
+  'RULE_CONFIG_REQUIRED',
+  'STALE_DATA',
+  'NO_DATA',
+])
+
+const getRiskPriorityLevel = (score) => {
+  if (score >= 120) return 'CRITICAL'
+  if (score >= 80) return 'HIGH'
+  if (score >= 45) return 'MEDIUM'
+  return 'LOW'
+}
+
+const riskPriorityTone = {
+  CRITICAL: 'bg-red-50 border-red-300 text-red-800',
+  HIGH: 'bg-amber-50 border-amber-300 text-amber-800',
+  MEDIUM: 'bg-sky-50 border-sky-300 text-sky-800',
+  LOW: 'bg-emerald-50 border-emerald-300 text-emerald-800',
+}
+
+const addRiskDriver = (drivers, points, label, level = 'MEDIUM') => {
+  if (!points || points <= 0) return
+  drivers.push({ points, label, level })
+}
+
+const calculateRiskPriority = (stock, history = []) => {
+  const drivers = []
+  const decision = stock.decisionResult?.decision || 'UNKNOWN'
+  const severity = stock.decisionResult?.severity || 'MEDIUM'
+
+  if (decision === 'SELL') addRiskDriver(drivers, 100, 'SELL判定', 'CRITICAL')
+  else if (decision === 'REDUCE') addRiskDriver(drivers, 80, 'REDUCE判定', 'HIGH')
+  else if (blockingDecisionSet.has(decision)) addRiskDriver(drivers, 70, `${decision}で通常判定停止`, 'HIGH')
+  else if (decision === 'BUY') addRiskDriver(drivers, 25, 'BUY判定。未実行なら機会損失候補', 'MEDIUM')
+
+  if (severity === 'CRITICAL') addRiskDriver(drivers, 35, '重大度CRITICAL', 'CRITICAL')
+  else if (severity === 'HIGH') addRiskDriver(drivers, 20, '重大度HIGH', 'HIGH')
+
+  if ((stock.positionWeight || 0) >= 8) addRiskDriver(drivers, 35, `個別銘柄比率 ${formatPercent(stock.positionWeight)}`, 'HIGH')
+  else if ((stock.positionWeight || 0) >= 5) addRiskDriver(drivers, 18, `個別銘柄比率 ${formatPercent(stock.positionWeight)}`, 'MEDIUM')
+
+  if ((stock.sectorWeight || 0) >= 25) addRiskDriver(drivers, 30, `セクター比率 ${formatPercent(stock.sectorWeight)}`, 'HIGH')
+  else if ((stock.sectorWeight || 0) >= 20) addRiskDriver(drivers, 15, `セクター比率 ${formatPercent(stock.sectorWeight)}`, 'MEDIUM')
+
+  if (stock.unrealizedGainRate !== null && stock.unrealizedGainRate <= -20) addRiskDriver(drivers, 30, `含み損 ${formatPercent(stock.unrealizedGainRate)}`, 'HIGH')
+  else if (stock.unrealizedGainRate !== null && stock.unrealizedGainRate <= -10) addRiskDriver(drivers, 15, `含み損 ${formatPercent(stock.unrealizedGainRate)}`, 'MEDIUM')
+
+  if ((stock.validationErrors || []).length > 0) addRiskDriver(drivers, 30, `異常値 ${stock.validationErrors.length}件`, 'HIGH')
+  if ((stock.verificationErrors || []).length > 0) addRiskDriver(drivers, 25, `根拠未確認 ${stock.verificationErrors.length}件`, 'HIGH')
+  if ((stock.evidenceErrors || []).length > 0) addRiskDriver(drivers, 25, `証跡不足 ${stock.evidenceErrors.length}件`, 'HIGH')
+  if ((stock.multipleEvidenceValueErrors || []).length > 0) addRiskDriver(drivers, 20, '複数数値の採用値未指定', 'HIGH')
+  if ((stock.evidenceMatchErrors || []).length > 0) addRiskDriver(drivers, 25, '証跡値と入力値の不一致', 'HIGH')
+
+  const reasons = stock.decisionResult?.reasons || []
+  if (reasons.some((reason) => String(reason).includes('期限切れ') || String(reason).includes('更新日'))) addRiskDriver(drivers, 22, 'データ期限切れ・更新日問題', 'HIGH')
+  if (reasons.some((reason) => String(reason).includes('未入力'))) addRiskDriver(drivers, 16, '必須データ未入力', 'MEDIUM')
+
+  const latest = [...history].sort((a, b) => String(b.decisionDate || b.createdAt).localeCompare(String(a.decisionDate || a.createdAt)))[0]
+  if (latest) {
+    const compliance = latest.complianceStatus || calculateActionCompliance(latest).complianceStatus
+    if (['SELL', 'REDUCE'].includes(latest.decision) && compliance === 'NOT_EXECUTED') addRiskDriver(drivers, 45, `直近${latest.decision}判定が未実行`, 'CRITICAL')
+    else if (compliance === 'CONTRADICTED') addRiskDriver(drivers, 45, '直近判定に逆行実行', 'CRITICAL')
+    else if (compliance === 'NON_COMPLIANT') addRiskDriver(drivers, 30, '直近判定に非遵守', 'HIGH')
+    if (!latest.outcomeDate && ['BUY', 'SELL', 'REDUCE', 'HOLD', 'WATCH'].includes(latest.decision)) addRiskDriver(drivers, 10, '直近判定の結果未評価', 'LOW')
+  }
+
+  const score = Math.round(drivers.reduce((sum, item) => sum + item.points, 0))
+  return {
+    ...stock,
+    riskPriorityScore: score,
+    riskPriorityLevel: getRiskPriorityLevel(score),
+    riskDrivers: drivers.sort((a, b) => b.points - a.points),
+  }
+}
+
+const buildRiskPriorityStats = (items) => ({
+  total: items.length,
+  critical: items.filter((item) => item.riskPriorityLevel === 'CRITICAL').length,
+  high: items.filter((item) => item.riskPriorityLevel === 'HIGH').length,
+  medium: items.filter((item) => item.riskPriorityLevel === 'MEDIUM').length,
+  low: items.filter((item) => item.riskPriorityLevel === 'LOW').length,
+  topScore: items[0]?.riskPriorityScore || 0,
+})
+
 const downloadTextFile = (content, filename, type) => {
   const blob = new Blob([content], { type })
   const url = URL.createObjectURL(blob)
@@ -2385,6 +2476,16 @@ export default function PortfolioManagementDashboard() {
   }, [checklistEntries])
 
 
+  const riskPriorityList = useMemo(() => {
+    return enrichedStocks
+      .map((stock) => calculateRiskPriority(stock, stockDecisionHistoryMap.get(stock.code) || []))
+      .sort((a, b) => b.riskPriorityScore - a.riskPriorityScore || (b.marketValueJPY || 0) - (a.marketValueJPY || 0))
+      .map((stock, index) => ({ ...stock, riskPriorityRank: index + 1 }))
+  }, [enrichedStocks, stockDecisionHistoryMap])
+
+  const riskPriorityStats = useMemo(() => buildRiskPriorityStats(riskPriorityList), [riskPriorityList])
+
+
   const appendAuditEntries = (entries) => {
     const normalized = sanitizeAuditLog(Array.isArray(entries) ? entries : [entries])
     if (normalized.length === 0) return
@@ -3191,6 +3292,28 @@ export default function PortfolioManagementDashboard() {
   }
 
 
+  const exportRiskPriorityCsv = () => {
+    const header = ['rank', 'code', 'name', 'market', 'group', 'decision', 'severity', 'riskPriorityLevel', 'riskPriorityScore', 'positionWeight', 'sectorWeight', 'unrealizedGainRate', 'topRiskDrivers']
+    const rows = riskPriorityList.map((stock) => [
+      stock.riskPriorityRank,
+      stock.code,
+      stock.name,
+      stock.market,
+      stock.group,
+      stock.decisionResult?.decision || '',
+      stock.decisionResult?.severity || '',
+      stock.riskPriorityLevel,
+      stock.riskPriorityScore,
+      stock.positionWeight || 0,
+      stock.sectorWeight || 0,
+      stock.unrealizedGainRate ?? '',
+      (stock.riskDrivers || []).slice(0, 5).map((driver) => `${driver.label}(${driver.points})`).join(' / '),
+    ])
+    const csv = [header, ...rows].map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(',')).join('\n')
+    downloadTextFile(`﻿${csv}`, 'portfolio-risk-priority.csv', 'text/csv;charset=utf-8;')
+  }
+
+
   const clearAuditLog = () => {
     if (window.confirm('監査ログをすべて削除します。実行しますか？')) {
       setAuditLog([])
@@ -3427,6 +3550,59 @@ export default function PortfolioManagementDashboard() {
               ))}
             </div>
           </div>
+
+          <div className="bg-white/80 backdrop-blur-3xl border border-red-100 rounded-[32px] shadow-[0_20px_60px_rgba(15,23,42,0.08)] p-6">
+            <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <h2 className="text-2xl font-bold text-slate-900">リスク優先度ランキング</h2>
+                <p className="text-xs font-semibold text-slate-500">SELL / REDUCE、停止判定、集中度、含み損、未実行、証跡不備を点数化し、確認順を機械的に固定。</p>
+              </div>
+              <button type="button" onClick={exportRiskPriorityCsv} className="rounded-2xl border border-red-300 bg-red-50 px-4 py-2 text-xs font-bold text-red-700 hover:bg-red-100">リスク優先度CSV</button>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+              <MetricCard label="最高リスク点" value={riskPriorityStats.topScore} subLabel={riskPriorityList[0] ? `${riskPriorityList[0].code} ${riskPriorityList[0].name}` : '対象なし'} tone={riskPriorityStats.topScore >= 120 ? 'red' : riskPriorityStats.topScore >= 80 ? 'amber' : 'emerald'} />
+              <MetricCard label="CRITICAL" value={riskPriorityStats.critical} subLabel="即確認対象" tone={riskPriorityStats.critical > 0 ? 'red' : 'emerald'} />
+              <MetricCard label="HIGH" value={riskPriorityStats.high} subLabel="優先確認対象" tone={riskPriorityStats.high > 0 ? 'amber' : 'emerald'} />
+              <MetricCard label="MEDIUM" value={riskPriorityStats.medium} subLabel="通常確認対象" tone="sky" />
+              <MetricCard label="LOW" value={riskPriorityStats.low} subLabel="低優先" tone="slate" />
+            </div>
+
+            <div className="mt-5 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+              <div className="grid grid-cols-[64px_110px_1fr_110px_90px] gap-3 border-b border-slate-100 bg-slate-50 px-4 py-3 text-[11px] font-bold text-slate-500">
+                <div>順位</div>
+                <div>銘柄</div>
+                <div>主要リスク要因</div>
+                <div>判定</div>
+                <div className="text-right">点数</div>
+              </div>
+              {riskPriorityList.slice(0, 15).map((stock) => (
+                <div key={stock.code} className="grid grid-cols-[64px_110px_1fr_110px_90px] gap-3 border-b border-slate-100 px-4 py-3 text-xs last:border-b-0">
+                  <div className="font-black text-slate-900">#{stock.riskPriorityRank}</div>
+                  <div>
+                    <div className="font-bold text-slate-900">{stock.code}</div>
+                    <div className="truncate text-[11px] font-semibold text-slate-500">{stock.name}</div>
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    {(stock.riskDrivers || []).slice(0, 4).map((driver) => (
+                      <span key={`${stock.code}-${driver.label}`} className={`rounded-full border px-2 py-1 text-[11px] font-bold ${riskPriorityTone[driver.level] || riskPriorityTone.MEDIUM}`}>
+                        {driver.label} +{driver.points}
+                      </span>
+                    ))}
+                    {(stock.riskDrivers || []).length === 0 && <span className="text-[11px] font-semibold text-slate-400">主要リスクなし</span>}
+                  </div>
+                  <div>
+                    <span className={`rounded-full border px-2 py-1 text-[11px] font-black ${decisionTone[stock.decisionResult?.decision] || decisionTone.WATCH}`}>
+                      {stock.decisionResult?.decision || 'UNKNOWN'}
+                    </span>
+                    <div className="mt-1 text-[11px] font-semibold text-slate-500">{stock.riskPriorityLevel}</div>
+                  </div>
+                  <div className="text-right text-lg font-black text-slate-900">{stock.riskPriorityScore}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
 
           <div className="bg-white/80 backdrop-blur-3xl border border-white/60 rounded-[32px] shadow-[0_20px_60px_rgba(15,23,42,0.08)] p-6">
             <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
