@@ -1,37 +1,18 @@
 # Portfolio Management Dashboard
 
-React + Vite で作成したポートフォリオ管理ダッシュボードです。
+GitHub Pages で公開するポートフォリオ管理ダッシュボードです。
 
-## 主な機能
+## 追加機能
 
-- 銘柄検索
-- 市場別・ジャンル別・条件タグ別フィルター
 - 保有数、取得単価、現在価格、年間配当の入力
-- USD/JPY の手動換算
-- 評価額、取得額、含み損益、年間配当、配当利回りの自動計算
-- セクター別評価額集計
-- リスク警告表示
-- CSV出力
-- CSV取込
-- localStorage 保存
+- 評価額、含み損益、年間配当、配当利回りの自動計算
+- CSV出力・CSV取込
+- JSONバックアップ保存・JSON復元
+- 市場別・通貨別比率
+- 上位保有銘柄の集中度表示
+- localStorage保存
 
-## CSV取込仕様
-
-CSV出力したファイルをそのまま取り込めます。
-
-必須列:
-
-```csv
-code
-```
-
-反映対象列:
-
-```csv
-shares,averagePrice,currentPrice,annualDividend
-```
-
-例:
+## CSV形式
 
 ```csv
 code,name,market,group,currency,shares,averagePrice,currentPrice,annualDividend
@@ -39,27 +20,22 @@ code,name,market,group,currency,shares,averagePrice,currentPrice,annualDividend
 MSFT,Microsoft,米国株,IT・AI,USD,10,300,430,3.32
 ```
 
-`code` が既存銘柄と一致する行だけ反映します。未登録コードは無視します。
+## JSONバックアップ
 
-## ローカル起動
+画面上の「JSON保存」で、localStorageに保存された保有データとUSD/JPYをバックアップできます。
+「JSON復元」で別ブラウザ・別PCへ移行できます。
 
-```bash
-npm install
-npm run dev
-```
+## GitHub Pages更新手順
 
-## ビルド
+このリポジトリは prebuilt dist 配信方式です。変更後は必ずローカルでビルドしてからpushします。
 
 ```bash
 npm run build
+git add .
+git commit -m "Update app"
+git push
 ```
 
-## GitHub Pages
+## 注意
 
-`main` ブランチへ push すると GitHub Actions で自動デプロイします。
-
-公開URL例:
-
-```txt
-https://phototestapp.github.io/portfolio-dashboard/
-```
+株価、配当、為替は手動入力です。入力値が誤っていれば、評価額・損益・利回りも誤ります。

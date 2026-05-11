@@ -102,6 +102,17 @@ const normalizeImportNumber = (value) => {
   return String(value).replace(/,/g, '').trim()
 }
 
+const downloadTextFile = (content, filename, type) => {
+  const blob = new Blob([content], { type })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
+
 function FilterButton({ label, active, onClick, activeClass = 'bg-slate-900 text-white border-slate-900' }) {
   return (
     <button
@@ -366,6 +377,26 @@ export default function PortfolioManagementDashboard() {
       .map(([group, value]) => ({ group, value, ratio: totalMarketValueJPY > 0 ? (value / totalMarketValueJPY) * 100 : 0 }))
       .sort((a, b) => b.value - a.value)
 
+    const buildDistribution = (key) => {
+      const map = new Map()
+      for (const stock of enrichedStocks) {
+        if (!stock.marketValueJPY) continue
+        const label = stock[key]
+        map.set(label, (map.get(label) || 0) + stock.marketValueJPY)
+      }
+      return [...map.entries()]
+        .map(([label, value]) => ({ label, value, ratio: totalMarketValueJPY > 0 ? (value / totalMarketValueJPY) * 100 : 0 }))
+        .sort((a, b) => b.value - a.value)
+    }
+
+    const byMarket = buildDistribution('market')
+    const byCurrency = buildDistribution('currency')
+    const topPositions = enrichedStocks
+      .filter((stock) => stock.marketValueJPY)
+      .map((stock) => ({ ...stock, ratio: totalMarketValueJPY > 0 ? (stock.marketValueJPY / totalMarketValueJPY) * 100 : 0 }))
+      .sort((a, b) => b.marketValueJPY - a.marketValueJPY)
+      .slice(0, 10)
+
     const largestGroup = byGroup[0]
     const negativePositions = enrichedStocks.filter((stock) => stock.pnlJPY !== null && stock.pnlJPY < 0)
     const missingValuationData = positionedStocks.filter((stock) => !stock.hasFullValuationData)
@@ -380,6 +411,9 @@ export default function PortfolioManagementDashboard() {
       portfolioDividendYield,
       unrealizedPnlRate,
       byGroup,
+      byMarket,
+      byCurrency,
+      topPositions,
       largestGroup,
       negativePositions,
       missingValuationData,
@@ -489,13 +523,75 @@ export default function PortfolioManagementDashboard() {
     const csv = [header, ...rows]
       .map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(','))
       .join('\n')
-    const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8;' })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = 'portfolio-dashboard.csv'
-    link.click()
-    URL.revokeObjectURL(url)
+    downloadTextFile(`\uFEFF${csv}`, 'portfolio-dashboard.csv', 'text/csv;charset=utf-8;')
+  }
+
+  const exportJson = () => {
+    const backup = {
+      app: 'portfolio-dashboard',
+      version: 2,
+      exportedAt: new Date().toISOString(),
+      usdJpy: usdJpyInput,
+      holdings,
+    }
+    downloadTextFile(JSON.stringify(backup, null, 2), 'portfolio-dashboard-backup.json', 'application/json;charset=utf-8;')
+  }
+
+  const importJson = async (event) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+
+    if (!file) return
+
+    try {
+      const text = await file.text()
+      const parsed = JSON.parse(text)
+      const importedHoldings = parsed?.holdings
+
+      if (!importedHoldings || typeof importedHoldings !== 'object' || Array.isArray(importedHoldings)) {
+        setImportMessage('JSON取込失敗: holdingsがありません。JSON出力したバックアップを使用してください。')
+        return
+      }
+
+      const stockCodeSet = new Set(stocks.map((stock) => stock.code))
+      const nextHoldings = {}
+      let importedCount = 0
+      let unknownCount = 0
+      let invalidCount = 0
+
+      for (const [code, holding] of Object.entries(importedHoldings)) {
+        if (!stockCodeSet.has(code)) {
+          unknownCount += 1
+          continue
+        }
+
+        const normalized = {
+          shares: normalizeImportNumber(holding?.shares),
+          averagePrice: normalizeImportNumber(holding?.averagePrice),
+          currentPrice: normalizeImportNumber(holding?.currentPrice),
+          annualDividend: normalizeImportNumber(holding?.annualDividend),
+        }
+        const values = Object.values(normalized)
+
+        if (!values.every(isImportableNumber)) {
+          invalidCount += 1
+          continue
+        }
+
+        if (!values.every((value) => value === '')) {
+          nextHoldings[code] = normalized
+          importedCount += 1
+        }
+      }
+
+      setHoldings(nextHoldings)
+      if (parsed.usdJpy !== undefined && isImportableNumber(parsed.usdJpy)) {
+        setUsdJpyInput(String(parsed.usdJpy))
+      }
+      setImportMessage(`JSON取込完了: ${importedCount}件反映 / 未登録コード ${unknownCount}件 / 数値不正 ${invalidCount}件`)
+    } catch (error) {
+      setImportMessage(`JSON取込失敗: ${error instanceof Error ? error.message : 'ファイルを読み込めませんでした'}`)
+    }
   }
 
   const clearHoldings = () => {
@@ -534,7 +630,7 @@ export default function PortfolioManagementDashboard() {
                 ))}
               </div>
 
-              <div className="grid gap-3 md:grid-cols-[1fr_220px_160px_160px_160px] md:items-end">
+              <div className="grid gap-3 md:grid-cols-[1fr_180px_repeat(5,140px)] md:items-end">
                 <div className="flex flex-col gap-2">
                   <label className="text-sm font-semibold text-slate-700">ジャンル</label>
                   <select
@@ -561,6 +657,13 @@ export default function PortfolioManagementDashboard() {
                 <label className="cursor-pointer rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-center text-sm font-semibold text-sky-700 transition hover:bg-sky-100">
                   CSV取込
                   <input type="file" accept=".csv,text/csv" onChange={importCsv} className="hidden" />
+                </label>
+                <button type="button" onClick={exportJson} className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50">
+                  JSON保存
+                </button>
+                <label className="cursor-pointer rounded-2xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-center text-sm font-semibold text-indigo-700 transition hover:bg-indigo-100">
+                  JSON復元
+                  <input type="file" accept=".json,application/json" onChange={importJson} className="hidden" />
                 </label>
                 <button type="button" onClick={clearHoldings} className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700 transition hover:bg-red-100">
                   入力全削除
@@ -619,6 +722,57 @@ export default function PortfolioManagementDashboard() {
                       </div>
                       <div className="h-3 rounded-full bg-slate-100">
                         <div className="h-3 rounded-full bg-slate-800" style={{ width: `${Math.min(item.ratio, 100)}%` }} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="bg-white/80 backdrop-blur-3xl border border-white/60 rounded-[32px] shadow-[0_20px_60px_rgba(15,23,42,0.08)] p-6">
+              <h2 className="text-2xl font-bold text-slate-900 mb-4">市場・通貨比率</h2>
+              <div className="space-y-4">
+                <div>
+                  <div className="mb-2 text-sm font-semibold text-slate-700">市場別</div>
+                  {portfolioSummary.byMarket.length === 0 ? (
+                    <div className="text-sm text-slate-500">評価額未入力</div>
+                  ) : portfolioSummary.byMarket.map((item) => (
+                    <div key={item.label} className="mb-2">
+                      <div className="flex justify-between text-xs text-slate-600"><span>{item.label}</span><span>{formatPercent(item.ratio)}</span></div>
+                      <div className="h-2 rounded-full bg-slate-100"><div className="h-2 rounded-full bg-sky-700" style={{ width: `${Math.min(item.ratio, 100)}%` }} /></div>
+                    </div>
+                  ))}
+                </div>
+                <div>
+                  <div className="mb-2 text-sm font-semibold text-slate-700">通貨別</div>
+                  {portfolioSummary.byCurrency.length === 0 ? (
+                    <div className="text-sm text-slate-500">評価額未入力</div>
+                  ) : portfolioSummary.byCurrency.map((item) => (
+                    <div key={item.label} className="mb-2">
+                      <div className="flex justify-between text-xs text-slate-600"><span>{item.label}</span><span>{formatPercent(item.ratio)}</span></div>
+                      <div className="h-2 rounded-full bg-slate-100"><div className="h-2 rounded-full bg-indigo-700" style={{ width: `${Math.min(item.ratio, 100)}%` }} /></div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid gap-6 xl:grid-cols-3">
+            <div className="bg-white/80 backdrop-blur-3xl border border-white/60 rounded-[32px] shadow-[0_20px_60px_rgba(15,23,42,0.08)] p-6 xl:col-span-2">
+              <h2 className="text-2xl font-bold text-slate-900 mb-4">上位保有銘柄</h2>
+              {portfolioSummary.topPositions.length === 0 ? (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">保有数と現在価格を入力すると表示されます。</div>
+              ) : (
+                <div className="space-y-3">
+                  {portfolioSummary.topPositions.map((stock) => (
+                    <div key={stock.code}>
+                      <div className="mb-1 flex justify-between gap-3 text-sm">
+                        <span className="font-semibold text-slate-700">{stock.code} {stock.name}</span>
+                        <span className="shrink-0 text-slate-500">{formatJPY(stock.marketValueJPY)} / {formatPercent(stock.ratio)}</span>
+                      </div>
+                      <div className="h-3 rounded-full bg-slate-100">
+                        <div className="h-3 rounded-full bg-slate-800" style={{ width: `${Math.min(stock.ratio, 100)}%` }} />
                       </div>
                     </div>
                   ))}
@@ -689,6 +843,10 @@ export default function PortfolioManagementDashboard() {
                   <li>・セクター別評価額</li>
                   <li>・CSV出力</li>
                   <li>・CSV取込</li>
+                  <li>・JSONバックアップ保存</li>
+                  <li>・JSONバックアップ復元</li>
+                  <li>・市場別・通貨別比率</li>
+                  <li>・上位保有銘柄の集中度表示</li>
                   <li>・localStorage保存</li>
                 </ul>
               </div>
