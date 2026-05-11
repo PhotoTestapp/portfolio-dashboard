@@ -2461,6 +2461,7 @@ export default function PortfolioManagementDashboard() {
     }
   })
   const [importMessage, setImportMessage] = useState('')
+  const [pendingMissingImport, setPendingMissingImport] = useState(null)
   const [decisionHistory, setDecisionHistory] = useState(() => {
     try {
       const saved = window.localStorage.getItem(HISTORY_KEY)
@@ -3073,6 +3074,111 @@ export default function PortfolioManagementDashboard() {
     }
   }
 
+  const buildMissingDataImportPreview = ({ headers, rows }) => {
+    const stockCodeSet = new Set(stocks.map((stock) => stock.code))
+
+    if (!headers.includes('code') || !headers.includes('missingField')) {
+      throw new Error('code列とmissingField列が必要です。portfolio-missing-data-template.csvを使用してください。')
+    }
+
+    let importableCount = 0
+    let unknownCount = 0
+    let invalidCount = 0
+    let skippedCount = 0
+    let highImpactCount = 0
+    let fxUpdated = false
+    const nextHoldings = { ...holdings }
+    const auditEntries = []
+    const previewRows = []
+    let nextFxUpdatedAt = fxUpdatedAtInput
+
+    for (const row of rows) {
+      const code = String(getCsvValue(row, ['code', '銘柄コード'])).trim()
+      const fieldName = String(getCsvValue(row, ['missingField', 'fieldName', '項目'])).trim()
+      const importedValue = getCsvValue(row, ['importedValue', 'value', 'newValue', 'inputValue', '入力値', '反映値'])
+      const fieldLabel = getCoverageFieldLabel(fieldName)
+      const basePreview = { code, name: '', fieldName, fieldLabel, previousValue: '', newValue: importedValue, status: 'SKIPPED', reason: '', impactLevel: 'LOW', decisionBefore: '', decisionAfter: 'RECALCULATED_AFTER_APPLY' }
+
+      if (!code || !fieldName) {
+        skippedCount += 1
+        previewRows.push({ ...basePreview, reason: 'codeまたはmissingFieldが空' })
+        continue
+      }
+
+      if (fieldName === 'fxUpdatedAt') {
+        const normalized = normalizeMissingDataImportValue(fieldName, importedValue)
+        if (!normalized.ok) {
+          invalidCount += 1
+          previewRows.push({ ...basePreview, status: 'INVALID', reason: normalized.reason || '値が不正' })
+          continue
+        }
+        if (String(nextFxUpdatedAt || '') === String(normalized.value || '')) {
+          skippedCount += 1
+          previewRows.push({ ...basePreview, previousValue: nextFxUpdatedAt || '', newValue: normalized.value, reason: '変更なし' })
+          continue
+        }
+        const impactLevel = 'HIGH'
+        highImpactCount += 1
+        auditEntries.push(buildAuditEntry({ code: 'SYSTEM', name: 'USD/JPY更新日', fieldName, previousValue: nextFxUpdatedAt || '', newValue: normalized.value, changeSource: 'missing_data_import_preview_apply', ruleVersion: DECISION_HISTORY_VERSION }))
+        previewRows.push({ ...basePreview, name: 'USD/JPY更新日', previousValue: nextFxUpdatedAt || '', newValue: normalized.value, status: 'IMPORTABLE', reason: '適用待ち', impactLevel, decisionBefore: 'SYSTEM', decisionAfter: 'RECALCULATED_AFTER_APPLY' })
+        nextFxUpdatedAt = normalized.value
+        fxUpdated = true
+        importableCount += 1
+        continue
+      }
+
+      if (!stockCodeSet.has(code)) {
+        unknownCount += 1
+        previewRows.push({ ...basePreview, status: 'UNKNOWN_CODE', reason: '登録銘柄に存在しないcode' })
+        continue
+      }
+
+      if (!holdingFields.includes(fieldName)) {
+        invalidCount += 1
+        previewRows.push({ ...basePreview, status: 'INVALID', reason: '取込対象外の項目' })
+        continue
+      }
+
+      const normalized = normalizeMissingDataImportValue(fieldName, importedValue)
+      if (!normalized.ok) {
+        invalidCount += 1
+        previewRows.push({ ...basePreview, status: 'INVALID', reason: normalized.reason || '値が不正' })
+        continue
+      }
+
+      const stock = stockByCode.get(code)
+      const previousHolding = nextHoldings[code] || {}
+      const previousValue = previousHolding[fieldName] ?? ''
+      const newValue = normalized.value
+      const decisionBefore = stock?.decisionResult?.decision || ''
+      const impactLevel = ['currentPrice', 'annualDividend', 'payoutRatio', 'operatingCashFlowYoY', 'epsYoY', 'dividendCut', 'sourceQuote', 'selectedEvidenceValue', 'financialUpdatedAt', 'priceUpdatedAt'].includes(fieldName) ? 'HIGH' : 'MEDIUM'
+
+      if (String(previousValue) === String(newValue)) {
+        skippedCount += 1
+        previewRows.push({ ...basePreview, name: stock?.name || '', previousValue, newValue, decisionBefore, reason: '変更なし' })
+        continue
+      }
+
+      if (impactLevel === 'HIGH') highImpactCount += 1
+      nextHoldings[code] = { ...previousHolding, [fieldName]: newValue }
+      auditEntries.push(buildAuditEntry({
+        code,
+        name: stock?.name || '',
+        fieldName,
+        previousValue,
+        newValue,
+        changeSource: 'missing_data_import_preview_apply',
+        decisionBefore,
+        decisionAfter: 'RECALCULATED_AFTER_APPLY',
+        ruleVersion: DECISION_HISTORY_VERSION,
+      }))
+      previewRows.push({ ...basePreview, name: stock?.name || '', previousValue, newValue, status: 'IMPORTABLE', reason: '適用待ち', impactLevel, decisionBefore, decisionAfter: 'RECALCULATED_AFTER_APPLY' })
+      importableCount += 1
+    }
+
+    return { importableCount, unknownCount, invalidCount, skippedCount, highImpactCount, fxUpdated, nextHoldings, auditEntries, nextFxUpdatedAt, rows: previewRows, createdAt: new Date().toISOString() }
+  }
+
   const importMissingDataTemplateCsv = async (event) => {
     const file = event.target.files?.[0]
     event.target.value = ''
@@ -3082,97 +3188,27 @@ export default function PortfolioManagementDashboard() {
     try {
       const text = await file.text()
       const { headers, rows } = parseCsvText(text)
-      const stockCodeSet = new Set(stocks.map((stock) => stock.code))
-
-      if (!headers.includes('code') || !headers.includes('missingField')) {
-        setImportMessage('不足入力CSV取込失敗: code列とmissingField列が必要です。portfolio-missing-data-template.csvを使用してください。')
-        return
-      }
-
-      let importedCount = 0
-      let unknownCount = 0
-      let invalidCount = 0
-      let skippedCount = 0
-      let fxUpdated = false
-      const nextHoldings = { ...holdings }
-      const auditEntries = []
-      let nextFxUpdatedAt = fxUpdatedAtInput
-
-      for (const row of rows) {
-        const code = String(getCsvValue(row, ['code', '銘柄コード'])).trim()
-        const fieldName = String(getCsvValue(row, ['missingField', 'fieldName', '項目'])).trim()
-        const importedValue = getCsvValue(row, ['importedValue', 'value', 'newValue', 'inputValue', '入力値', '反映値'])
-
-        if (!code || !fieldName) {
-          skippedCount += 1
-          continue
-        }
-
-        if (fieldName === 'fxUpdatedAt') {
-          const normalized = normalizeMissingDataImportValue(fieldName, importedValue)
-          if (!normalized.ok) {
-            invalidCount += 1
-            continue
-          }
-          if (String(nextFxUpdatedAt || '') !== String(normalized.value || '')) {
-            auditEntries.push(buildAuditEntry({ code: 'SYSTEM', name: 'USD/JPY更新日', fieldName, previousValue: nextFxUpdatedAt || '', newValue: normalized.value, changeSource: 'missing_data_import', ruleVersion: DECISION_HISTORY_VERSION }))
-            nextFxUpdatedAt = normalized.value
-            fxUpdated = true
-            importedCount += 1
-          } else {
-            skippedCount += 1
-          }
-          continue
-        }
-
-        if (!stockCodeSet.has(code)) {
-          unknownCount += 1
-          continue
-        }
-
-        if (!holdingFields.includes(fieldName)) {
-          invalidCount += 1
-          continue
-        }
-
-        const normalized = normalizeMissingDataImportValue(fieldName, importedValue)
-        if (!normalized.ok) {
-          invalidCount += 1
-          continue
-        }
-
-        const stock = stockByCode.get(code)
-        const previousHolding = nextHoldings[code] || {}
-        const previousValue = previousHolding[fieldName] ?? ''
-        const newValue = normalized.value
-
-        if (String(previousValue) === String(newValue)) {
-          skippedCount += 1
-          continue
-        }
-
-        nextHoldings[code] = { ...previousHolding, [fieldName]: newValue }
-        auditEntries.push(buildAuditEntry({
-          code,
-          name: stock?.name || '',
-          fieldName,
-          previousValue,
-          newValue,
-          changeSource: 'missing_data_import',
-          decisionBefore: stock?.decisionResult?.decision || '',
-          decisionAfter: 'RECALCULATED_AFTER_CHANGE',
-          ruleVersion: DECISION_HISTORY_VERSION,
-        }))
-        importedCount += 1
-      }
-
-      setHoldings(nextHoldings)
-      if (fxUpdated) setFxUpdatedAtInput(nextFxUpdatedAt)
-      appendAuditEntries(auditEntries)
-      setImportMessage(`不足入力CSV取込完了: ${importedCount}件反映 / 未登録コード ${unknownCount}件 / 不正 ${invalidCount}件 / スキップ ${skippedCount}件`)
+      const preview = buildMissingDataImportPreview({ headers, rows })
+      setPendingMissingImport(preview)
+      setImportMessage(`不足入力CSVプレビュー作成: 反映予定 ${preview.importableCount}件 / HIGH影響 ${preview.highImpactCount}件 / 未登録 ${preview.unknownCount}件 / 不正 ${preview.invalidCount}件 / スキップ ${preview.skippedCount}件。内容確認後に「プレビューを適用」を押してください。`)
     } catch (error) {
-      setImportMessage(`不足入力CSV取込失敗: ${error instanceof Error ? error.message : 'ファイルを読み込めませんでした'}`)
+      setPendingMissingImport(null)
+      setImportMessage(`不足入力CSVプレビュー失敗: ${error instanceof Error ? error.message : 'ファイルを読み込めませんでした'}`)
     }
+  }
+
+  const applyPendingMissingDataImport = () => {
+    if (!pendingMissingImport) return
+    setHoldings(pendingMissingImport.nextHoldings)
+    if (pendingMissingImport.fxUpdated) setFxUpdatedAtInput(pendingMissingImport.nextFxUpdatedAt)
+    appendAuditEntries(pendingMissingImport.auditEntries)
+    setImportMessage(`不足入力CSV反映完了: ${pendingMissingImport.importableCount}件反映 / HIGH影響 ${pendingMissingImport.highImpactCount}件 / 未登録 ${pendingMissingImport.unknownCount}件 / 不正 ${pendingMissingImport.invalidCount}件 / スキップ ${pendingMissingImport.skippedCount}件`)
+    setPendingMissingImport(null)
+  }
+
+  const cancelPendingMissingDataImport = () => {
+    setPendingMissingImport(null)
+    setImportMessage('不足入力CSVプレビューを破棄しました。データは変更していません。')
   }
 
   const exportCsv = () => {
@@ -4083,6 +4119,52 @@ export default function PortfolioManagementDashboard() {
               </div>
 
               {importMessage && <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm font-semibold text-sky-800">{importMessage}</div>}
+
+              {pendingMissingImport && (
+                <div className="rounded-3xl border border-amber-200 bg-amber-50 p-5">
+                  <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                    <div>
+                      <h3 className="text-lg font-bold text-amber-900">不足入力CSV 反映前プレビュー</h3>
+                      <p className="mt-1 text-sm text-amber-800">反映予定 {pendingMissingImport.importableCount}件 / HIGH影響 {pendingMissingImport.highImpactCount}件 / 未登録 {pendingMissingImport.unknownCount}件 / 不正 {pendingMissingImport.invalidCount}件 / スキップ {pendingMissingImport.skippedCount}件</p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button type="button" onClick={applyPendingMissingDataImport} className="rounded-2xl border border-emerald-300 bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700">プレビューを適用</button>
+                      <button type="button" onClick={cancelPendingMissingDataImport} className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">キャンセル</button>
+                    </div>
+                  </div>
+                  <div className="mt-4 max-h-80 overflow-auto rounded-2xl border border-amber-200 bg-white">
+                    <table className="min-w-full text-left text-xs">
+                      <thead className="sticky top-0 bg-amber-100 text-amber-900">
+                        <tr>
+                          <th className="px-3 py-2">状態</th>
+                          <th className="px-3 py-2">銘柄</th>
+                          <th className="px-3 py-2">項目</th>
+                          <th className="px-3 py-2">変更前</th>
+                          <th className="px-3 py-2">変更後</th>
+                          <th className="px-3 py-2">判定変化</th>
+                          <th className="px-3 py-2">影響</th>
+                          <th className="px-3 py-2">理由</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {pendingMissingImport.rows.slice(0, 100).map((row, index) => (
+                          <tr key={`${row.code}-${row.fieldName}-${index}`} className={row.status === 'IMPORTABLE' ? 'bg-white' : 'bg-slate-50 text-slate-500'}>
+                            <td className="px-3 py-2 font-semibold">{row.status}</td>
+                            <td className="px-3 py-2">{row.code} {row.name}</td>
+                            <td className="px-3 py-2">{row.fieldLabel || row.fieldName}</td>
+                            <td className="px-3 py-2">{String(row.previousValue ?? '')}</td>
+                            <td className="px-3 py-2">{String(row.newValue ?? '')}</td>
+                            <td className="px-3 py-2">{row.decisionBefore || '-'} → {row.decisionAfter || '-'}</td>
+                            <td className="px-3 py-2 font-semibold">{row.impactLevel}</td>
+                            <td className="px-3 py-2">{row.reason}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {pendingMissingImport.rows.length > 100 && <div className="mt-2 text-xs text-amber-800">表示は先頭100件のみです。適用対象件数は上部の反映予定件数を確認してください。</div>}
+                </div>
+              )}
 
               <div className="flex flex-wrap gap-2 text-xs text-slate-500">
                 <span className="rounded-full bg-slate-100 px-3 py-1">市場: {selectedMarket === 'ALL' ? '全市場' : selectedMarket}</span>
