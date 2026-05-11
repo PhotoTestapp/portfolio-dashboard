@@ -2465,6 +2465,7 @@ export default function PortfolioManagementDashboard() {
   })
   const [importMessage, setImportMessage] = useState('')
   const [pendingMissingImport, setPendingMissingImport] = useState(null)
+  const [bulkPasteText, setBulkPasteText] = useState('')
   const [importValidationReport, setImportValidationReport] = useState(() => {
     try {
       const saved = window.localStorage.getItem(IMPORT_VALIDATION_REPORT_KEY)
@@ -3211,6 +3212,35 @@ export default function PortfolioManagementDashboard() {
       setPendingMissingImport(null)
       setImportMessage(`不足入力CSVプレビュー失敗: ${error instanceof Error ? error.message : 'ファイルを読み込めませんでした'}`)
     }
+  }
+
+
+  const previewBulkPasteImport = () => {
+    const text = bulkPasteText.trim()
+    if (!text) {
+      setImportMessage('一括貼り付け入力が空です。Excel / Google Sheets からヘッダー付きで貼り付けてください。')
+      return
+    }
+
+    try {
+      const { headers, rows } = parseCsvText(text)
+      if (!headers.length || rows.length === 0) {
+        setPendingMissingImport(null)
+        setImportMessage('一括貼り付けプレビュー失敗: ヘッダー行またはデータ行がありません。')
+        return
+      }
+      const preview = buildMissingDataImportPreview({ headers, rows })
+      setPendingMissingImport({ ...preview, sourceType: 'bulk_paste' })
+      setImportMessage(`一括貼り付けプレビュー作成: 反映予定 ${preview.importableCount}件 / HIGH影響 ${preview.highImpactCount}件 / 未登録 ${preview.unknownCount}件 / 不正 ${preview.invalidCount}件 / スキップ ${preview.skippedCount}件。内容確認後に「プレビューを適用」を押してください。`)
+    } catch (error) {
+      setPendingMissingImport(null)
+      setImportMessage(`一括貼り付けプレビュー失敗: ${error instanceof Error ? error.message : '貼り付け内容を解析できませんでした'}`)
+    }
+  }
+
+  const clearBulkPasteInput = () => {
+    setBulkPasteText('')
+    setImportMessage('一括貼り付け入力をクリアしました。')
   }
 
   const buildImportValidationReport = (preview) => {
@@ -4217,6 +4247,26 @@ export default function PortfolioManagementDashboard() {
 
               {importMessage && <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm font-semibold text-sky-800">{importMessage}</div>}
 
+              <div className="rounded-3xl border border-teal-200 bg-teal-50 p-5">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <div>
+                    <h3 className="text-lg font-bold text-teal-900">一括貼り付け入力</h3>
+                    <p className="mt-1 text-sm text-teal-800">Excel / Google Sheets からヘッダー付きで貼り付け。CSVファイルを作らずに、不足入力CSVと同じ形式でプレビューできます。</p>
+                    <p className="mt-1 text-xs text-teal-700">必須列: code, missingField, importedValue。区切りはタブ・カンマの両方に対応。</p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button type="button" onClick={previewBulkPasteImport} className="rounded-2xl border border-teal-300 bg-teal-600 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-700">貼り付け内容をプレビュー</button>
+                    <button type="button" onClick={clearBulkPasteInput} className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">クリア</button>
+                  </div>
+                </div>
+                <textarea
+                  value={bulkPasteText}
+                  onChange={(event) => setBulkPasteText(event.target.value)}
+                  placeholder={'code\tname\tmissingField\tmissingFieldLabel\timportedValue\n2914\t日本たばこ産業\tpayoutRatio\t配当性向\t62.4\nMSFT\tMicrosoft\tepsYoY\tEPS前年比\t12.5'}
+                  className="mt-4 h-40 w-full rounded-2xl border border-teal-200 bg-white px-4 py-3 font-mono text-xs text-slate-900 outline-none transition focus:border-teal-400 focus:ring-4 focus:ring-teal-100"
+                />
+              </div>
+
               {importValidationReport && (
                 <div className="rounded-3xl border border-purple-200 bg-purple-50 p-5">
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -4243,7 +4293,7 @@ export default function PortfolioManagementDashboard() {
                 <div className="rounded-3xl border border-amber-200 bg-amber-50 p-5">
                   <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                     <div>
-                      <h3 className="text-lg font-bold text-amber-900">不足入力CSV 反映前プレビュー</h3>
+                      <h3 className="text-lg font-bold text-amber-900">{pendingMissingImport.sourceType === 'bulk_paste' ? '一括貼り付け 反映前プレビュー' : '不足入力CSV 反映前プレビュー'}</h3>
                       <p className="mt-1 text-sm text-amber-800">反映予定 {pendingMissingImport.importableCount}件 / HIGH影響 {pendingMissingImport.highImpactCount}件 / 未登録 {pendingMissingImport.unknownCount}件 / 不正 {pendingMissingImport.invalidCount}件 / スキップ {pendingMissingImport.skippedCount}件</p>
                     </div>
                     <div className="flex flex-wrap gap-2">

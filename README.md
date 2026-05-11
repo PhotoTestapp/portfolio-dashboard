@@ -599,3 +599,27 @@ code,missingField
 - `portfolio-import-validation-report-YYYY-MM-DD.json`
 
 このレポートはCSV一括反映後に、何が更新され、どこに影響したかを固定するための監査資料です。
+
+
+## 一括貼り付け入力
+
+`portfolio-missing-data-template.csv` を毎回ファイル保存せず、Excel / Google Sheets からヘッダー付きで直接貼り付けて不足項目を更新できます。
+
+対応する最小形式:
+
+```tsv
+code	missingField	importedValue
+2914	payoutRatio	62.4
+2914	financialUpdatedAt	2026-05-11
+MSFT	epsYoY	12.5
+```
+
+処理手順:
+
+1. 表計算ソフトからヘッダー付きでコピー
+2. 「一括貼り付け入力」に貼り付け
+3. 「貼り付け内容をプレビュー」を押す
+4. 変更前後、不正行、HIGH影響件数を確認
+5. 問題なければ「プレビューを適用」
+
+CSV取込と同じ検証ロジックを使うため、未登録コード・対象外項目・範囲外値は反映されません。適用時のみ `auditLog` に記録されます。
