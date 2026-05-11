@@ -10,6 +10,7 @@ const DEFAULT_USD_JPY = 155
 const decisionLabels = {
   INVALID_DATA: 'INVALID_DATA',
   UNVERIFIED_DATA: 'UNVERIFIED_DATA',
+  WEAK_EVIDENCE: 'WEAK_EVIDENCE',
   STALE_DATA: 'STALE_DATA',
   BUY: 'BUY',
   HOLD: 'HOLD',
@@ -22,6 +23,7 @@ const decisionLabels = {
 const decisionTone = {
   INVALID_DATA: 'bg-red-100 border-red-400 text-red-900',
   UNVERIFIED_DATA: 'bg-purple-50 border-purple-300 text-purple-800',
+  WEAK_EVIDENCE: 'bg-fuchsia-50 border-fuchsia-300 text-fuchsia-800',
   STALE_DATA: 'bg-orange-50 border-orange-300 text-orange-800',
   BUY: 'bg-emerald-50 border-emerald-300 text-emerald-800',
   HOLD: 'bg-sky-50 border-sky-300 text-sky-800',
@@ -57,10 +59,15 @@ const holdingFields = [
   'fiscalPeriod',
   'dataType',
   'confirmedAt',
+  'sourcePage',
+  'sourceQuote',
+  'sourceMetricName',
+  'sourceUnit',
+  'evidenceMemo',
 ]
 
 const dateFields = ['priceUpdatedAt', 'financialUpdatedAt', 'confirmedAt']
-const evidenceFields = ['sourceName', 'sourceUrl', 'fiscalPeriod', 'dataType', 'confirmedAt']
+const evidenceFields = ['sourceName', 'sourceUrl', 'fiscalPeriod', 'dataType', 'confirmedAt', 'sourcePage', 'sourceQuote', 'sourceMetricName', 'sourceUnit', 'evidenceMemo']
 const numericFields = holdingFields.filter((field) => field !== 'dividendCut' && !dateFields.includes(field) && !evidenceFields.includes(field))
 const nonNegativeFields = ['shares', 'averagePrice', 'currentPrice', 'annualDividend', 'payoutRatio', 'equityRatio', 'debtToEquity']
 const signedFields = ['operatingCashFlowYoY', 'revenueYoY', 'epsYoY']
@@ -300,6 +307,11 @@ const normalizeImportedHolding = (raw) => {
   normalized.fiscalPeriod = String(raw.fiscalPeriod || '').trim()
   normalized.dataType = String(raw.dataType || '').trim()
   normalized.confirmedAt = String(raw.confirmedAt || '').trim()
+  normalized.sourcePage = String(raw.sourcePage || '').trim()
+  normalized.sourceQuote = String(raw.sourceQuote || '').trim()
+  normalized.sourceMetricName = String(raw.sourceMetricName || '').trim()
+  normalized.sourceUnit = String(raw.sourceUnit || '').trim()
+  normalized.evidenceMemo = String(raw.evidenceMemo || '').trim()
   return normalized
 }
 
@@ -389,6 +401,60 @@ const validateVerificationInput = (holding) => {
   return { errors: [...new Set(errors)], fieldErrors }
 }
 
+
+const validateEvidenceStrengthInput = (holding) => {
+  const errors = []
+  const fieldErrors = {}
+
+  if (!hasAnyEvidenceTargetData(holding)) return { errors, fieldErrors }
+
+  const sourcePage = String(holding?.sourcePage || '').trim()
+  const sourceQuote = String(holding?.sourceQuote || '').trim()
+  const sourceMetricName = String(holding?.sourceMetricName || '').trim()
+  const sourceUnit = String(holding?.sourceUnit || '').trim()
+
+  if (!sourcePage) {
+    const error = '根拠ページが未入力'
+    fieldErrors.sourcePage = error
+    errors.push(error)
+  } else if (!/^\d+$/.test(sourcePage) || Number(sourcePage) < 1) {
+    const error = '根拠ページが1以上の整数ではありません'
+    fieldErrors.sourcePage = error
+    errors.push(error)
+  }
+
+  if (!sourceQuote) {
+    const error = '引用文・該当数値が未入力'
+    fieldErrors.sourceQuote = error
+    errors.push(error)
+  } else {
+    if (sourceQuote.length < 5) {
+      const error = '引用文・該当数値が短すぎます'
+      fieldErrors.sourceQuote = error
+      errors.push(error)
+    }
+    if (!/[0-9０-９]/.test(sourceQuote)) {
+      const error = '引用文・該当数値に数値が含まれていません'
+      fieldErrors.sourceQuote = error
+      errors.push(error)
+    }
+  }
+
+  if (!sourceMetricName) {
+    const error = '参照指標名が未入力'
+    fieldErrors.sourceMetricName = error
+    errors.push(error)
+  }
+
+  if (!sourceUnit) {
+    const error = '単位が未入力'
+    fieldErrors.sourceUnit = error
+    errors.push(error)
+  }
+
+  return { errors: [...new Set(errors)], fieldErrors }
+}
+
 const downloadTextFile = (content, filename, type) => {
   const blob = new Blob([content], { type })
   const url = URL.createObjectURL(blob)
@@ -453,6 +519,14 @@ const judgeStock = (stock) => {
       decision: 'UNVERIFIED_DATA',
       severity: 'HIGH',
       reasons: stock.verificationErrors,
+    }
+  }
+
+  if (stock.evidenceErrors?.length > 0) {
+    return {
+      decision: 'WEAK_EVIDENCE',
+      severity: 'HIGH',
+      reasons: stock.evidenceErrors,
     }
   }
 
@@ -660,7 +734,7 @@ function DecisionBadge({ result }) {
 
 function StockCard({ stock, holding, onHoldingChange }) {
   const result = stock.decisionResult || { decision: 'NO_DATA', severity: 'HIGH', reasons: ['判定不可'] }
-  const fieldErrors = { ...(stock.validationFieldErrors || {}), ...(stock.verificationFieldErrors || {}) }
+  const fieldErrors = { ...(stock.validationFieldErrors || {}), ...(stock.verificationFieldErrors || {}), ...(stock.evidenceFieldErrors || {}) }
 
   const updateField = (field, value) => {
     onHoldingChange(stock.code, {
@@ -731,6 +805,18 @@ function StockCard({ stock, holding, onHoldingChange }) {
           <DataTypeSelectCell label="データ種別" value={holding.dataType} onChange={(value) => updateField('dataType', value)} error={fieldErrors.dataType} />
           <DateInputCell label="根拠確認日" value={holding.confirmedAt} onChange={(value) => updateField('confirmedAt', value)} error={fieldErrors.confirmedAt} />
         </div>
+        <div className="mt-3 border-t border-purple-100 pt-3">
+          <div className="mb-2 text-xs font-bold text-fuchsia-800">証跡レベル</div>
+          <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+            <TextCell label="根拠ページ" value={holding.sourcePage} onChange={(value) => updateField('sourcePage', value)} placeholder="例: 12" error={fieldErrors.sourcePage} inputMode="numeric" />
+            <TextCell label="参照指標名" value={holding.sourceMetricName} onChange={(value) => updateField('sourceMetricName', value)} placeholder="例: 配当性向" error={fieldErrors.sourceMetricName} />
+            <TextCell label="単位" value={holding.sourceUnit} onChange={(value) => updateField('sourceUnit', value)} placeholder="例: % / 円 / USD" error={fieldErrors.sourceUnit} />
+            <TextCell label="補足メモ" value={holding.evidenceMemo} onChange={(value) => updateField('evidenceMemo', value)} placeholder="任意" error={fieldErrors.evidenceMemo} />
+            <div className="md:col-span-2">
+              <TextCell label="引用文・該当数値" value={holding.sourceQuote} onChange={(value) => updateField('sourceQuote', value)} placeholder="例: 配当性向は62.4%" error={fieldErrors.sourceQuote} />
+            </div>
+          </div>
+        </div>
       </div>
 
       <div className="mt-3 grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
@@ -767,6 +853,15 @@ function StockCard({ stock, holding, onHoldingChange }) {
           <div className="mb-1 text-sm font-bold">根拠未確認: 判定停止</div>
           <ul className="space-y-1">
             {stock.verificationErrors.slice(0, 6).map((error) => <li key={error}>・{error}</li>)}
+          </ul>
+        </div>
+      )}
+
+      {stock.evidenceErrors?.length > 0 && (
+        <div className="mt-4 rounded-2xl border border-fuchsia-300 bg-fuchsia-50 p-4 text-xs font-semibold text-fuchsia-800">
+          <div className="mb-1 text-sm font-bold">証跡不足: 判定停止</div>
+          <ul className="space-y-1">
+            {stock.evidenceErrors.slice(0, 6).map((error) => <li key={error}>・{error}</li>)}
           </ul>
         </div>
       )}
@@ -1051,7 +1146,11 @@ export default function PortfolioManagementDashboard() {
     const priceStaleStocks = enrichedStocks.filter((stock) => stock.decisionResult?.decision === 'STALE_DATA' && stock.decisionResult?.reasons.some((reason) => reason.includes('現在価格') || reason.includes('価格更新日')))
     const financialStaleStocks = enrichedStocks.filter((stock) => stock.decisionResult?.decision === 'STALE_DATA' && stock.decisionResult?.reasons.some((reason) => reason.includes('財務')))
     const fxStaleStocks = enrichedStocks.filter((stock) => stock.decisionResult?.decision === 'STALE_DATA' && stock.decisionResult?.reasons.some((reason) => reason.includes('USD/JPY')))
-    const criticalStocks = enrichedStocks.filter((stock) => ['INVALID_DATA', 'UNVERIFIED_DATA', 'STALE_DATA', 'SELL', 'REDUCE', 'NO_DATA'].includes(stock.decisionResult?.decision))
+    const weakEvidenceStocks = enrichedStocks.filter((stock) => stock.decisionResult?.decision === 'WEAK_EVIDENCE')
+    const quoteMissingStocks = enrichedStocks.filter((stock) => stock.evidenceFieldErrors?.sourceQuote)
+    const pageMissingStocks = enrichedStocks.filter((stock) => stock.evidenceFieldErrors?.sourcePage)
+    const metricMissingStocks = enrichedStocks.filter((stock) => stock.evidenceFieldErrors?.sourceMetricName)
+    const criticalStocks = enrichedStocks.filter((stock) => ['INVALID_DATA', 'UNVERIFIED_DATA', 'WEAK_EVIDENCE', 'STALE_DATA', 'SELL', 'REDUCE', 'NO_DATA'].includes(stock.decisionResult?.decision))
 
     return {
       positionedCount: positionedStocks.length,
@@ -1075,6 +1174,10 @@ export default function PortfolioManagementDashboard() {
       sourceUrlInvalidStocks,
       fiscalPeriodMissingStocks,
       dataTypeMissingStocks,
+      weakEvidenceStocks,
+      quoteMissingStocks,
+      pageMissingStocks,
+      metricMissingStocks,
       staleStocks,
       priceStaleStocks,
       financialStaleStocks,
@@ -1154,6 +1257,11 @@ export default function PortfolioManagementDashboard() {
           fiscalPeriod: getCsvValue(row, ['fiscalPeriod', '対象決算期']),
           dataType: getCsvValue(row, ['dataType', 'データ種別']),
           confirmedAt: getCsvValue(row, ['confirmedAt', '根拠確認日']),
+          sourcePage: getCsvValue(row, ['sourcePage', '根拠ページ']),
+          sourceQuote: getCsvValue(row, ['sourceQuote', '引用文・該当数値', '引用']),
+          sourceMetricName: getCsvValue(row, ['sourceMetricName', '参照指標名', '指標名']),
+          sourceUnit: getCsvValue(row, ['sourceUnit', '単位']),
+          evidenceMemo: getCsvValue(row, ['evidenceMemo', '補足メモ']),
         })
 
         const values = Object.values(importedHolding)
@@ -1187,7 +1295,8 @@ export default function PortfolioManagementDashboard() {
       'payoutRatio', 'operatingCashFlowYoY', 'revenueYoY', 'epsYoY', 'equityRatio', 'debtToEquity', 'dividendCut',
       'priceUpdatedAt', 'financialUpdatedAt', 'fxUpdatedAt',
       'sourceName', 'sourceUrl', 'fiscalPeriod', 'dataType', 'confirmedAt',
-      'decision', 'severity', 'decisionReasons', 'validationErrors',
+      'sourcePage', 'sourceQuote', 'sourceMetricName', 'sourceUnit', 'evidenceMemo',
+      'decision', 'severity', 'decisionReasons', 'validationErrors', 'verificationErrors', 'evidenceErrors',
       'marketValueJPY', 'costJPY', 'pnlJPY', 'annualDividendJPY', 'dividendYield', 'positionWeight', 'sectorWeight'
     ]
     const rows = enrichedStocks.map((stock) => [
@@ -1215,10 +1324,17 @@ export default function PortfolioManagementDashboard() {
       stock.holding.fiscalPeriod || '',
       stock.holding.dataType || '',
       stock.holding.confirmedAt || '',
+      stock.holding.sourcePage || '',
+      stock.holding.sourceQuote || '',
+      stock.holding.sourceMetricName || '',
+      stock.holding.sourceUnit || '',
+      stock.holding.evidenceMemo || '',
       stock.decisionResult?.decision || '',
       stock.decisionResult?.severity || '',
       (stock.decisionResult?.reasons || []).join(' / '),
       (stock.validationErrors || []).join(' / '),
+      (stock.verificationErrors || []).join(' / '),
+      (stock.evidenceErrors || []).join(' / '),
       stock.marketValueJPY || '',
       stock.costJPY || '',
       stock.pnlJPY || '',
@@ -1300,6 +1416,11 @@ export default function PortfolioManagementDashboard() {
           fiscalPeriod: holding?.fiscalPeriod,
           dataType: holding?.dataType,
           confirmedAt: holding?.confirmedAt,
+          sourcePage: holding?.sourcePage,
+          sourceQuote: holding?.sourceQuote,
+          sourceMetricName: holding?.sourceMetricName,
+          sourceUnit: holding?.sourceUnit,
+          evidenceMemo: holding?.evidenceMemo,
         })
         const values = Object.values(normalized)
 
@@ -1431,9 +1552,10 @@ export default function PortfolioManagementDashboard() {
             </div>
           </div>
 
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-8">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-10">
             <MetricCard label="INVALID" value={portfolioSummary.decisionCounts.INVALID_DATA || 0} subLabel="入力異常" tone="red" />
             <MetricCard label="UNVERIFIED" value={portfolioSummary.decisionCounts.UNVERIFIED_DATA || 0} subLabel="根拠未確認" tone="amber" />
+            <MetricCard label="WEAK" value={portfolioSummary.decisionCounts.WEAK_EVIDENCE || 0} subLabel="証跡不足" tone="amber" />
             <MetricCard label="STALE" value={portfolioSummary.decisionCounts.STALE_DATA || 0} subLabel="期限切れ" tone="amber" />
             <MetricCard label="SELL" value={portfolioSummary.decisionCounts.SELL || 0} subLabel="強制売却条件" tone="red" />
             <MetricCard label="REDUCE" value={portfolioSummary.decisionCounts.REDUCE || 0} subLabel="削減条件" tone="amber" />
@@ -1452,6 +1574,7 @@ export default function PortfolioManagementDashboard() {
 
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <MetricCard label="根拠未確認合計" value={portfolioSummary.unverifiedStocks.length} subLabel="UNVERIFIED_DATA" tone="amber" />
+            <MetricCard label="証跡不足合計" value={portfolioSummary.weakEvidenceStocks.length} subLabel="WEAK_EVIDENCE" tone="amber" />
             <MetricCard label="URL不正/未入力" value={portfolioSummary.sourceUrlInvalidStocks.length} subLabel="根拠URL" tone="amber" />
             <MetricCard label="決算期不明" value={portfolioSummary.fiscalPeriodMissingStocks.length} subLabel="対象決算期" tone="amber" />
             <MetricCard label="種別未選択" value={portfolioSummary.dataTypeMissingStocks.length} subLabel="実績/予想" tone="amber" />
@@ -1489,9 +1612,15 @@ export default function PortfolioManagementDashboard() {
                     <li>・現在価格7日超</li><li>・USD/JPY7日超</li><li>・財務データ100日超</li><li>・更新日未入力</li><li>・期限切れ時は判定停止</li>
                   </ul>
                 </div>
+                <div className="rounded-2xl border border-fuchsia-200 bg-fuchsia-50 p-4">
+                  <div className="font-bold text-fuchsia-700 mb-2">WEAK_EVIDENCE</div>
+                  <ul className="space-y-1 text-slate-700">
+                    <li>・根拠ページ未入力</li><li>・引用文・該当数値なし</li><li>・引用に数値なし</li><li>・参照指標名なし</li><li>・単位なし</li>
+                  </ul>
+                </div>
               </div>
               <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm font-semibold text-slate-700">
-                入力できるのは数値・事実のみ。判定優先順位は INVALID_DATA → STALE_DATA → NO_DATA → SELL → REDUCE → BUY → HOLD → WATCH。異常値がある場合は売買判定を停止し、人間による上書きは不可。
+                入力できるのは数値・事実のみ。判定優先順位は INVALID_DATA → UNVERIFIED_DATA → WEAK_EVIDENCE → STALE_DATA → NO_DATA → SELL → REDUCE → BUY → HOLD → WATCH。異常値がある場合は売買判定を停止し、人間による上書きは不可。
               </div>
             </div>
 
@@ -1646,12 +1775,14 @@ export default function PortfolioManagementDashboard() {
               <div className="bg-amber-50 border border-amber-200 rounded-[28px] p-6">
                 <h3 className="font-semibold text-amber-700 mb-3">今回追加したこと</h3>
                 <ul className="space-y-2 text-sm text-slate-700">
-                  <li>・INVALID_DATA / UNVERIFIED_DATA / STALE_DATA / BUY / HOLD / WATCH / REDUCE / SELL / NO_DATAの機械判定</li>
+                  <li>・INVALID_DATA / UNVERIFIED_DATA / WEAK_EVIDENCE / STALE_DATA / BUY / HOLD / WATCH / REDUCE / SELL / NO_DATAの機械判定</li>
                   <li>・入力異常値チェックと異常時の判定停止</li>
                   <li>・UNVERIFIED_DATA判定と根拠未確認時の判定停止</li>
-                  <li>・STALE_DATA判定と期限切れ時の判定停止</li>
+                  <li>・WEAK_EVIDENCE判定と証跡不足時の判定停止
+                  <li>・STALE_DATA判定と期限切れ時の判定停止</li></li>
                   <li>・価格更新日、財務更新日、USD/JPY更新日の管理</li>
-                  <li>・取得元名、根拠URL、対象決算期、データ種別、根拠確認日の管理</li>
+                  <li>・取得元名、根拠URL、対象決算期、データ種別、根拠確認日の管理
+                  <li>・根拠ページ、引用文、参照指標名、単位、補足メモの管理</li></li>
                   <li>・人間による判定上書きの排除</li>
                   <li>・配当性向、営業CF前年比、EPS前年比、財務安全性入力</li>
                   <li>・判定理由と重大度表示</li>
