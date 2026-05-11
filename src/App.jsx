@@ -354,6 +354,38 @@ const coverageFieldLabels = {
 }
 const getCoverageFieldLabel = (field) => coverageFieldLabels[field] || validationRules[field]?.label || field
 
+const missingDataTemplateHints = {
+  shares: { reason: '評価額・保有比率・損益計算に必要', hint: '保有株数。未保有なら0。', sourceRequired: '取引履歴 / 証券口座' },
+  averagePrice: { reason: '取得額・含み損益率の計算に必要', hint: '平均取得単価。通貨は銘柄通貨。', sourceRequired: '取引履歴 / 証券口座' },
+  currentPrice: { reason: '評価額・利回り・集中度の計算に必要', hint: '現在価格。価格更新日も同時更新。', sourceRequired: '市場価格 / 証券口座' },
+  annualDividend: { reason: '年間配当・配当利回り計算に必要', hint: '1株あたり年間配当。', sourceRequired: 'IR / 配当情報' },
+  payoutRatio: { reason: 'SELL / REDUCE / BUY判定に必要', hint: '配当性向%。', sourceRequired: '決算短信 / 10-K / IR資料' },
+  operatingCashFlowYoY: { reason: 'キャッシュフロー悪化判定に必要', hint: '営業CF前年比%。', sourceRequired: '決算資料 / キャッシュフロー計算書' },
+  revenueYoY: { reason: '売上成長・景気悪化判定に必要', hint: '売上前年比%。', sourceRequired: '決算資料 / 損益計算書' },
+  epsYoY: { reason: '利益悪化・BUY条件判定に必要', hint: 'EPS前年比%。', sourceRequired: '決算資料 / EPS実績' },
+  equityRatio: { reason: '財務安全性判定に必要', hint: '自己資本比率%。', sourceRequired: '決算資料 / 貸借対照表' },
+  debtToEquity: { reason: '負債リスク判定に必要', hint: '有利子負債倍率。', sourceRequired: '決算資料 / 財務指標' },
+  dividendCut: { reason: '強制SELL判定に必要', hint: 'true/false または あり/なし。', sourceRequired: '配当履歴 / IR発表' },
+  priceUpdatedAt: { reason: '価格データ鮮度判定に必要', hint: 'YYYY-MM-DD。', sourceRequired: '価格確認日' },
+  financialUpdatedAt: { reason: '財務データ鮮度判定に必要', hint: 'YYYY-MM-DD。', sourceRequired: '財務データ確認日' },
+  fxUpdatedAt: { reason: '米国株円換算の鮮度判定に必要', hint: 'YYYY-MM-DD。', sourceRequired: '為替確認日' },
+  sourceName: { reason: '根拠未確認判定を防ぐために必要', hint: '例: 決算短信 / Form 10-K / IR Presentation。', sourceRequired: '根拠資料名' },
+  sourceUrl: { reason: '根拠URL検証に必要', hint: 'https:// で始まるURL。', sourceRequired: 'IR資料URL' },
+  fiscalPeriod: { reason: '決算期ズレ防止に必要', hint: '例: FY2025 Q2。', sourceRequired: '対象決算期' },
+  dataType: { reason: '実績・予想の混同防止に必要', hint: 'actual / company_forecast / analyst_forecast。', sourceRequired: 'データ種別' },
+  confirmedAt: { reason: '根拠確認日の検証に必要', hint: 'YYYY-MM-DD。', sourceRequired: '確認日' },
+  sourcePage: { reason: '証跡ページ特定に必要', hint: '1以上の整数。', sourceRequired: 'PDF/資料ページ' },
+  sourceQuote: { reason: '引用値照合に必要', hint: '数値を含む引用文。', sourceRequired: '資料内の該当文言' },
+  selectedEvidenceValue: { reason: '複数数値引用時の採用値特定に必要', hint: '実際に入力値へ採用した数値。', sourceRequired: '引用文内の採用数値' },
+  sourceMetricName: { reason: '引用値と入力項目の対応付けに必要', hint: '例: 配当性向 / EPS前年比。', sourceRequired: '指標名' },
+  sourceUnit: { reason: '単位ミス防止に必要', hint: '例: % / 倍 / 円 / USD。', sourceRequired: '単位' },
+  ruleProfile: { reason: '業種別ルール判定に必要', hint: 'GENERAL / BANK / REIT等。', sourceRequired: '銘柄分類' },
+  decisionHistory: { reason: 'ルール成績評価の母集団に必要', hint: '現在判定を履歴保存する。', sourceRequired: 'アプリ操作' },
+  actionTracking: { reason: '判定遵守率・未実行検出に必要', hint: '実行有無・価格・株数を入力。', sourceRequired: '売買履歴' },
+  outcomeEvaluation: { reason: '判定成績・重み診断に必要', hint: '結果価格・配当・確認日を入力。', sourceRequired: '結果確認データ' },
+}
+const getMissingDataTemplateHint = (field) => missingDataTemplateHints[field] || { reason: `${getCoverageFieldLabel(field)}が判定・診断に必要`, hint: '根拠資料に基づき入力。', sourceRequired: '確認が必要' }
+
 const profileMetricDefinitions = {
   BANK: [
     { field: 'bankCapitalRatio', label: '銀行自己資本比率(%)', placeholder: '例: 10.5' },
@@ -3756,6 +3788,20 @@ export default function PortfolioManagementDashboard() {
     downloadTextFile(`﻿${csv}`, 'portfolio-coverage-diagnostics.csv', 'text/csv;charset=utf-8;')
   }
 
+
+  const exportMissingDataTemplateCsv = () => {
+    const header = ['code', 'name', 'market', 'group', 'ruleProfile', 'missingField', 'missingFieldLabel', 'requiredReason', 'inputHint', 'sourceRequired', 'currentDecision', 'riskPriorityScore', 'coverageScore', 'impact', 'priority']
+    const rows = [...coverageDiagnostics.blockers]
+      .sort((a, b) => (b.priority || 0) - (a.priority || 0))
+      .map((item) => {
+        const stock = enrichedStocks.find((target) => target.code === item.code)
+        const hint = getMissingDataTemplateHint(item.fieldName)
+        return [item.code, item.name, stock?.market || '', stock?.group || '', stock?.ruleProfile || '', item.fieldName, item.fieldLabel, hint.reason, hint.hint, hint.sourceRequired, item.decision, stock?.riskPriorityScore || 0, item.coverageScore, item.impact, Math.round(item.priority || 0)]
+      })
+    const csv = [header, ...rows].map((row) => row.map((cell) => `"${String(cell ?? '').replaceAll('"', '""')}"`).join(',')).join('\n')
+    downloadTextFile(`﻿${csv}`, 'portfolio-missing-data-template.csv', 'text/csv;charset=utf-8;')
+  }
+
   const applyRiskWeightRecommendations = () => {
     const actionable = riskWeightDiagnostics.filter((item) => ['INCREASE', 'DECREASE'].includes(item.recommendation) && item.evaluatedCount >= 3 && item.suggestedWeight !== item.currentWeight)
     if (actionable.length === 0) {
@@ -3964,11 +4010,15 @@ export default function PortfolioManagementDashboard() {
                 <h2 className="text-2xl font-bold text-slate-900">データ入力・評価カバレッジ診断</h2>
                 <p className="text-xs font-semibold text-slate-500">判定・診断・バックテストに必要な入力不足を機械的に抽出。次に埋めるべき項目を固定。</p>
               </div>
-              <button type="button" onClick={exportCoverageDiagnosticsCsv} className="rounded-2xl border border-teal-300 bg-teal-50 px-4 py-2 text-xs font-bold text-teal-700 hover:bg-teal-100">不足診断CSV</button>
+              <div className="flex flex-wrap gap-2">
+                <button type="button" onClick={exportCoverageDiagnosticsCsv} className="rounded-2xl border border-teal-300 bg-teal-50 px-4 py-2 text-xs font-bold text-teal-700 hover:bg-teal-100">不足診断CSV</button>
+                <button type="button" onClick={exportMissingDataTemplateCsv} className="rounded-2xl border border-teal-300 bg-white px-4 py-2 text-xs font-bold text-teal-700 hover:bg-teal-50">不足入力テンプレートCSV</button>
+              </div>
             </div>
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
               <MetricCard label="総合カバレッジ" value={formatPercent(coverageDiagnostics.coverageScore)} subLabel={`${coverageDiagnostics.filledFields}/${coverageDiagnostics.totalFields}項目`} tone={coverageDiagnostics.coverageScore >= 90 ? 'emerald' : coverageDiagnostics.coverageScore >= 75 ? 'amber' : 'red'} />
               <MetricCard label="不足項目" value={coverageDiagnostics.missingFields} subLabel={`HIGH ${coverageDiagnostics.highImpactBlockers}件`} tone={coverageDiagnostics.highImpactBlockers > 0 ? 'red' : 'emerald'} />
+              <MetricCard label="入力テンプレート行" value={coverageDiagnostics.blockers.length} subLabel="CSV出力対象" tone={coverageDiagnostics.blockers.length > 0 ? 'amber' : 'emerald'} />
               <MetricCard label="結果評価率" value={formatPercent(coverageDiagnostics.outcomeCoverageRate)} subLabel="decisionHistory中" tone={coverageDiagnostics.outcomeCoverageRate >= 70 ? 'emerald' : 'amber'} />
               <MetricCard label="実行記録率" value={formatPercent(coverageDiagnostics.actionCoverageRate)} subLabel="actionTracking" tone={coverageDiagnostics.actionCoverageRate >= 70 ? 'emerald' : 'amber'} />
               <MetricCard label="チェック完了率" value={formatPercent(coverageDiagnostics.checklistCoverageRate)} subLabel="運用タスク" tone={coverageDiagnostics.checklistCoverageRate >= 80 ? 'emerald' : 'amber'} />
