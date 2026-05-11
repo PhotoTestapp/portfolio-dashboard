@@ -14,6 +14,137 @@ const DEFAULT_USD_JPY = 155
 const DECISION_HISTORY_VERSION = '2026.05-decision-action-v1'
 const AUDIT_LOG_VERSION = '2026.05-audit-log-v1'
 const APP_SCHEMA_VERSION = '2026.05-integrity-v1'
+const RISK_WEIGHT_KEY = 'portfolio-dashboard-risk-weight-config-v1'
+const RISK_SCORE_VERSION = '2026.05-risk-weight-v1'
+
+const DEFAULT_RISK_WEIGHT_CONFIG = {
+  riskScoreVersion: RISK_SCORE_VERSION,
+  riskWeightReviewedAt: '',
+  riskWeightChangeReason: '初期リスク重み設定',
+  riskWeightRegime: 'NORMAL',
+  levels: { critical: 120, high: 80, medium: 45 },
+  weights: {
+    decisionSell: 100,
+    decisionReduce: 80,
+    blockingDecision: 70,
+    decisionBuy: 25,
+    severityCritical: 35,
+    severityHigh: 20,
+    positionOver8: 35,
+    positionOver5: 18,
+    sectorOver25: 30,
+    sectorOver20: 15,
+    lossOver20: 30,
+    lossOver10: 15,
+    validationError: 30,
+    verificationError: 25,
+    evidenceError: 25,
+    multipleEvidenceError: 20,
+    mismatchedEvidenceError: 25,
+    staleData: 22,
+    missingData: 16,
+    sellReduceNotExecuted: 45,
+    contradictedAction: 45,
+    nonCompliantAction: 30,
+    outcomeMissing: 10,
+  },
+}
+
+const riskWeightDefinitions = [
+  { key: 'decisionSell', label: 'SELL判定', min: 0, max: 300 },
+  { key: 'decisionReduce', label: 'REDUCE判定', min: 0, max: 300 },
+  { key: 'blockingDecision', label: '停止判定', min: 0, max: 300 },
+  { key: 'decisionBuy', label: 'BUY判定', min: 0, max: 300 },
+  { key: 'severityCritical', label: '重大度CRITICAL', min: 0, max: 200 },
+  { key: 'severityHigh', label: '重大度HIGH', min: 0, max: 200 },
+  { key: 'positionOver8', label: '個別比率8%以上', min: 0, max: 200 },
+  { key: 'positionOver5', label: '個別比率5%以上', min: 0, max: 200 },
+  { key: 'sectorOver25', label: 'セクター比率25%以上', min: 0, max: 200 },
+  { key: 'sectorOver20', label: 'セクター比率20%以上', min: 0, max: 200 },
+  { key: 'lossOver20', label: '含み損-20%以下', min: 0, max: 200 },
+  { key: 'lossOver10', label: '含み損-10%以下', min: 0, max: 200 },
+  { key: 'validationError', label: '異常値', min: 0, max: 200 },
+  { key: 'verificationError', label: '根拠未確認', min: 0, max: 200 },
+  { key: 'evidenceError', label: '証跡不足', min: 0, max: 200 },
+  { key: 'multipleEvidenceError', label: '複数証跡値未指定', min: 0, max: 200 },
+  { key: 'mismatchedEvidenceError', label: '証跡値不一致', min: 0, max: 200 },
+  { key: 'staleData', label: '期限切れ・更新日問題', min: 0, max: 200 },
+  { key: 'missingData', label: '必須データ未入力', min: 0, max: 200 },
+  { key: 'sellReduceNotExecuted', label: 'SELL/REDUCE未実行', min: 0, max: 300 },
+  { key: 'contradictedAction', label: '逆行実行', min: 0, max: 300 },
+  { key: 'nonCompliantAction', label: '非遵守実行', min: 0, max: 300 },
+  { key: 'outcomeMissing', label: '結果未評価', min: 0, max: 100 },
+]
+
+const riskLevelDefinitions = [
+  { key: 'critical', label: 'CRITICAL閾値', min: 1, max: 500 },
+  { key: 'high', label: 'HIGH閾値', min: 1, max: 500 },
+  { key: 'medium', label: 'MEDIUM閾値', min: 1, max: 500 },
+]
+
+const riskRegimeOptions = [
+  { value: 'RISK_ON', label: 'RISK_ON / 強気' },
+  { value: 'NORMAL', label: 'NORMAL / 通常' },
+  { value: 'RISK_OFF', label: 'RISK_OFF / 防御' },
+]
+
+const toConfigNumber = (value, fallback) => {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : fallback
+}
+
+const sanitizeRiskWeightConfig = (value) => {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  const weights = {}
+  for (const definition of riskWeightDefinitions) {
+    const fallback = DEFAULT_RISK_WEIGHT_CONFIG.weights[definition.key]
+    weights[definition.key] = String(toConfigNumber(source?.weights?.[definition.key], fallback))
+  }
+  const levels = {}
+  for (const definition of riskLevelDefinitions) {
+    const fallback = DEFAULT_RISK_WEIGHT_CONFIG.levels[definition.key]
+    levels[definition.key] = String(toConfigNumber(source?.levels?.[definition.key], fallback))
+  }
+  const regime = String(source.riskWeightRegime || DEFAULT_RISK_WEIGHT_CONFIG.riskWeightRegime)
+  return {
+    riskScoreVersion: String(source.riskScoreVersion || DEFAULT_RISK_WEIGHT_CONFIG.riskScoreVersion),
+    riskWeightReviewedAt: String(source.riskWeightReviewedAt || ''),
+    riskWeightChangeReason: String(source.riskWeightChangeReason || DEFAULT_RISK_WEIGHT_CONFIG.riskWeightChangeReason),
+    riskWeightRegime: riskRegimeOptions.some((option) => option.value === regime) ? regime : DEFAULT_RISK_WEIGHT_CONFIG.riskWeightRegime,
+    weights,
+    levels,
+  }
+}
+
+const getRiskWeight = (config, key) => toConfigNumber(config?.weights?.[key], DEFAULT_RISK_WEIGHT_CONFIG.weights[key] || 0)
+const getRiskLevelThreshold = (config, key) => toConfigNumber(config?.levels?.[key], DEFAULT_RISK_WEIGHT_CONFIG.levels[key] || 0)
+
+const validateRiskWeightConfig = (config) => {
+  const errors = []
+  const reviewedAt = String(config?.riskWeightReviewedAt || '')
+  if (!reviewedAt) errors.push('リスク重み確認日が未入力')
+  else {
+    const reviewedDate = new Date(reviewedAt)
+    if (Number.isNaN(reviewedDate.getTime())) errors.push('リスク重み確認日が日付ではない')
+    else if (reviewedDate.getTime() > Date.now()) errors.push('リスク重み確認日が未来日')
+    else if (Math.floor((Date.now() - reviewedDate.getTime()) / 86400000) > 180) errors.push('リスク重み確認日が180日超過')
+  }
+  if (!String(config?.riskScoreVersion || '').trim()) errors.push('リスクスコアバージョンが未入力')
+  if (String(config?.riskWeightChangeReason || '').trim().length < 5) errors.push('リスク重み変更理由が短すぎる')
+  for (const definition of riskWeightDefinitions) {
+    const value = Number(config?.weights?.[definition.key])
+    if (!Number.isFinite(value) || value < definition.min || value > definition.max) errors.push(`${definition.label}が許容範囲外`)
+  }
+  for (const definition of riskLevelDefinitions) {
+    const value = Number(config?.levels?.[definition.key])
+    if (!Number.isFinite(value) || value < definition.min || value > definition.max) errors.push(`${definition.label}が許容範囲外`)
+  }
+  const critical = getRiskLevelThreshold(config, 'critical')
+  const high = getRiskLevelThreshold(config, 'high')
+  const medium = getRiskLevelThreshold(config, 'medium')
+  if (!(critical > high && high > medium)) errors.push('リスクレベル閾値は CRITICAL > HIGH > MEDIUM の順にする必要あり')
+  return errors
+}
 
 const operationalChecklistDefinitions = [
   { id: 'daily-price-fx', cadence: 'DAILY', label: '価格・USD/JPY更新', description: '現在価格、USD/JPY、価格更新日を更新し、STALE_DATAを発生させない。', maxAgeDays: 1, impact: 'HIGH' },
@@ -839,10 +970,10 @@ const blockingDecisionSet = new Set([
   'NO_DATA',
 ])
 
-const getRiskPriorityLevel = (score) => {
-  if (score >= 120) return 'CRITICAL'
-  if (score >= 80) return 'HIGH'
-  if (score >= 45) return 'MEDIUM'
+const getRiskPriorityLevel = (score, riskWeightConfig = DEFAULT_RISK_WEIGHT_CONFIG) => {
+  if (score >= getRiskLevelThreshold(riskWeightConfig, 'critical')) return 'CRITICAL'
+  if (score >= getRiskLevelThreshold(riskWeightConfig, 'high')) return 'HIGH'
+  if (score >= getRiskLevelThreshold(riskWeightConfig, 'medium')) return 'MEDIUM'
   return 'LOW'
 }
 
@@ -858,52 +989,52 @@ const addRiskDriver = (drivers, points, label, level = 'MEDIUM') => {
   drivers.push({ points, label, level })
 }
 
-const calculateRiskPriority = (stock, history = []) => {
+const calculateRiskPriority = (stock, history = [], riskWeightConfig = DEFAULT_RISK_WEIGHT_CONFIG) => {
   const drivers = []
   const decision = stock.decisionResult?.decision || 'UNKNOWN'
   const severity = stock.decisionResult?.severity || 'MEDIUM'
 
-  if (decision === 'SELL') addRiskDriver(drivers, 100, 'SELL判定', 'CRITICAL')
-  else if (decision === 'REDUCE') addRiskDriver(drivers, 80, 'REDUCE判定', 'HIGH')
-  else if (blockingDecisionSet.has(decision)) addRiskDriver(drivers, 70, `${decision}で通常判定停止`, 'HIGH')
-  else if (decision === 'BUY') addRiskDriver(drivers, 25, 'BUY判定。未実行なら機会損失候補', 'MEDIUM')
+  if (decision === 'SELL') addRiskDriver(drivers, getRiskWeight(riskWeightConfig, 'decisionSell'), 'SELL判定', 'CRITICAL')
+  else if (decision === 'REDUCE') addRiskDriver(drivers, getRiskWeight(riskWeightConfig, 'decisionReduce'), 'REDUCE判定', 'HIGH')
+  else if (blockingDecisionSet.has(decision)) addRiskDriver(drivers, getRiskWeight(riskWeightConfig, 'blockingDecision'), `${decision}で通常判定停止`, 'HIGH')
+  else if (decision === 'BUY') addRiskDriver(drivers, getRiskWeight(riskWeightConfig, 'decisionBuy'), 'BUY判定。未実行なら機会損失候補', 'MEDIUM')
 
-  if (severity === 'CRITICAL') addRiskDriver(drivers, 35, '重大度CRITICAL', 'CRITICAL')
-  else if (severity === 'HIGH') addRiskDriver(drivers, 20, '重大度HIGH', 'HIGH')
+  if (severity === 'CRITICAL') addRiskDriver(drivers, getRiskWeight(riskWeightConfig, 'severityCritical'), '重大度CRITICAL', 'CRITICAL')
+  else if (severity === 'HIGH') addRiskDriver(drivers, getRiskWeight(riskWeightConfig, 'severityHigh'), '重大度HIGH', 'HIGH')
 
-  if ((stock.positionWeight || 0) >= 8) addRiskDriver(drivers, 35, `個別銘柄比率 ${formatPercent(stock.positionWeight)}`, 'HIGH')
-  else if ((stock.positionWeight || 0) >= 5) addRiskDriver(drivers, 18, `個別銘柄比率 ${formatPercent(stock.positionWeight)}`, 'MEDIUM')
+  if ((stock.positionWeight || 0) >= 8) addRiskDriver(drivers, getRiskWeight(riskWeightConfig, 'positionOver8'), `個別銘柄比率 ${formatPercent(stock.positionWeight)}`, 'HIGH')
+  else if ((stock.positionWeight || 0) >= 5) addRiskDriver(drivers, getRiskWeight(riskWeightConfig, 'positionOver5'), `個別銘柄比率 ${formatPercent(stock.positionWeight)}`, 'MEDIUM')
 
-  if ((stock.sectorWeight || 0) >= 25) addRiskDriver(drivers, 30, `セクター比率 ${formatPercent(stock.sectorWeight)}`, 'HIGH')
-  else if ((stock.sectorWeight || 0) >= 20) addRiskDriver(drivers, 15, `セクター比率 ${formatPercent(stock.sectorWeight)}`, 'MEDIUM')
+  if ((stock.sectorWeight || 0) >= 25) addRiskDriver(drivers, getRiskWeight(riskWeightConfig, 'sectorOver25'), `セクター比率 ${formatPercent(stock.sectorWeight)}`, 'HIGH')
+  else if ((stock.sectorWeight || 0) >= 20) addRiskDriver(drivers, getRiskWeight(riskWeightConfig, 'sectorOver20'), `セクター比率 ${formatPercent(stock.sectorWeight)}`, 'MEDIUM')
 
-  if (stock.unrealizedGainRate !== null && stock.unrealizedGainRate <= -20) addRiskDriver(drivers, 30, `含み損 ${formatPercent(stock.unrealizedGainRate)}`, 'HIGH')
-  else if (stock.unrealizedGainRate !== null && stock.unrealizedGainRate <= -10) addRiskDriver(drivers, 15, `含み損 ${formatPercent(stock.unrealizedGainRate)}`, 'MEDIUM')
+  if (stock.unrealizedGainRate !== null && stock.unrealizedGainRate <= -20) addRiskDriver(drivers, getRiskWeight(riskWeightConfig, 'lossOver20'), `含み損 ${formatPercent(stock.unrealizedGainRate)}`, 'HIGH')
+  else if (stock.unrealizedGainRate !== null && stock.unrealizedGainRate <= -10) addRiskDriver(drivers, getRiskWeight(riskWeightConfig, 'lossOver10'), `含み損 ${formatPercent(stock.unrealizedGainRate)}`, 'MEDIUM')
 
-  if ((stock.validationErrors || []).length > 0) addRiskDriver(drivers, 30, `異常値 ${stock.validationErrors.length}件`, 'HIGH')
-  if ((stock.verificationErrors || []).length > 0) addRiskDriver(drivers, 25, `根拠未確認 ${stock.verificationErrors.length}件`, 'HIGH')
-  if ((stock.evidenceErrors || []).length > 0) addRiskDriver(drivers, 25, `証跡不足 ${stock.evidenceErrors.length}件`, 'HIGH')
-  if ((stock.multipleEvidenceValueErrors || []).length > 0) addRiskDriver(drivers, 20, '複数数値の採用値未指定', 'HIGH')
-  if ((stock.evidenceMatchErrors || []).length > 0) addRiskDriver(drivers, 25, '証跡値と入力値の不一致', 'HIGH')
+  if ((stock.validationErrors || []).length > 0) addRiskDriver(drivers, getRiskWeight(riskWeightConfig, 'validationError'), `異常値 ${stock.validationErrors.length}件`, 'HIGH')
+  if ((stock.verificationErrors || []).length > 0) addRiskDriver(drivers, getRiskWeight(riskWeightConfig, 'verificationError'), `根拠未確認 ${stock.verificationErrors.length}件`, 'HIGH')
+  if ((stock.evidenceErrors || []).length > 0) addRiskDriver(drivers, getRiskWeight(riskWeightConfig, 'evidenceError'), `証跡不足 ${stock.evidenceErrors.length}件`, 'HIGH')
+  if ((stock.multipleEvidenceValueErrors || []).length > 0) addRiskDriver(drivers, getRiskWeight(riskWeightConfig, 'multipleEvidenceError'), '複数数値の採用値未指定', 'HIGH')
+  if ((stock.evidenceMatchErrors || []).length > 0) addRiskDriver(drivers, getRiskWeight(riskWeightConfig, 'mismatchedEvidenceError'), '証跡値と入力値の不一致', 'HIGH')
 
   const reasons = stock.decisionResult?.reasons || []
-  if (reasons.some((reason) => String(reason).includes('期限切れ') || String(reason).includes('更新日'))) addRiskDriver(drivers, 22, 'データ期限切れ・更新日問題', 'HIGH')
-  if (reasons.some((reason) => String(reason).includes('未入力'))) addRiskDriver(drivers, 16, '必須データ未入力', 'MEDIUM')
+  if (reasons.some((reason) => String(reason).includes('期限切れ') || String(reason).includes('更新日'))) addRiskDriver(drivers, getRiskWeight(riskWeightConfig, 'staleData'), 'データ期限切れ・更新日問題', 'HIGH')
+  if (reasons.some((reason) => String(reason).includes('未入力'))) addRiskDriver(drivers, getRiskWeight(riskWeightConfig, 'missingData'), '必須データ未入力', 'MEDIUM')
 
   const latest = [...history].sort((a, b) => String(b.decisionDate || b.createdAt).localeCompare(String(a.decisionDate || a.createdAt)))[0]
   if (latest) {
     const compliance = latest.complianceStatus || calculateActionCompliance(latest).complianceStatus
-    if (['SELL', 'REDUCE'].includes(latest.decision) && compliance === 'NOT_EXECUTED') addRiskDriver(drivers, 45, `直近${latest.decision}判定が未実行`, 'CRITICAL')
-    else if (compliance === 'CONTRADICTED') addRiskDriver(drivers, 45, '直近判定に逆行実行', 'CRITICAL')
-    else if (compliance === 'NON_COMPLIANT') addRiskDriver(drivers, 30, '直近判定に非遵守', 'HIGH')
-    if (!latest.outcomeDate && ['BUY', 'SELL', 'REDUCE', 'HOLD', 'WATCH'].includes(latest.decision)) addRiskDriver(drivers, 10, '直近判定の結果未評価', 'LOW')
+    if (['SELL', 'REDUCE'].includes(latest.decision) && compliance === 'NOT_EXECUTED') addRiskDriver(drivers, getRiskWeight(riskWeightConfig, 'sellReduceNotExecuted'), `直近${latest.decision}判定が未実行`, 'CRITICAL')
+    else if (compliance === 'CONTRADICTED') addRiskDriver(drivers, getRiskWeight(riskWeightConfig, 'contradictedAction'), '直近判定に逆行実行', 'CRITICAL')
+    else if (compliance === 'NON_COMPLIANT') addRiskDriver(drivers, getRiskWeight(riskWeightConfig, 'nonCompliantAction'), '直近判定に非遵守', 'HIGH')
+    if (!latest.outcomeDate && ['BUY', 'SELL', 'REDUCE', 'HOLD', 'WATCH'].includes(latest.decision)) addRiskDriver(drivers, getRiskWeight(riskWeightConfig, 'outcomeMissing'), '直近判定の結果未評価', 'LOW')
   }
 
   const score = Math.round(drivers.reduce((sum, item) => sum + item.points, 0))
   return {
     ...stock,
     riskPriorityScore: score,
-    riskPriorityLevel: getRiskPriorityLevel(score),
+    riskPriorityLevel: getRiskPriorityLevel(score, riskWeightConfig),
     riskDrivers: drivers.sort((a, b) => b.points - a.points),
   }
 }
@@ -976,7 +1107,7 @@ const sanitizeIntegrityMeta = (value) => {
   }
 }
 
-const createBackupPayloadForHash = ({ usdJpy, fxUpdatedAt, holdings, decisionHistory, auditLog, operationalChecklist }) => ({
+const createBackupPayloadForHash = ({ usdJpy, fxUpdatedAt, holdings, decisionHistory, auditLog, operationalChecklist, riskWeightConfig }) => ({
   app: 'portfolio-dashboard',
   schemaVersion: APP_SCHEMA_VERSION,
   usdJpy,
@@ -985,6 +1116,7 @@ const createBackupPayloadForHash = ({ usdJpy, fxUpdatedAt, holdings, decisionHis
   decisionHistory,
   auditLog,
   operationalChecklist,
+  riskWeightConfig,
 })
 
 const buildBackupMeta = ({ payload, stocks, decisionHistory, auditLog, operationalChecklist }) => {
@@ -2093,6 +2225,15 @@ export default function PortfolioManagementDashboard() {
     }
   })
 
+  const [riskWeightConfig, setRiskWeightConfig] = useState(() => {
+    try {
+      const saved = window.localStorage.getItem(RISK_WEIGHT_KEY)
+      return saved ? sanitizeRiskWeightConfig(JSON.parse(saved)) : sanitizeRiskWeightConfig(DEFAULT_RISK_WEIGHT_CONFIG)
+    } catch {
+      return sanitizeRiskWeightConfig(DEFAULT_RISK_WEIGHT_CONFIG)
+    }
+  })
+
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(holdings))
   }, [holdings])
@@ -2116,6 +2257,10 @@ export default function PortfolioManagementDashboard() {
   useEffect(() => {
     window.localStorage.setItem(CHECKLIST_KEY, JSON.stringify(operationalChecklist))
   }, [operationalChecklist])
+
+  useEffect(() => {
+    window.localStorage.setItem(RISK_WEIGHT_KEY, JSON.stringify(riskWeightConfig))
+  }, [riskWeightConfig])
 
   const stocks = useMemo(() => normalizeStocks({ sections, businessMap, thesisMap, buyMap, sellMap }), [])
   const allGroups = useMemo(() => [...new Set(stocks.map((stock) => stock.group))], [stocks])
@@ -2476,12 +2621,40 @@ export default function PortfolioManagementDashboard() {
   }, [checklistEntries])
 
 
+  const riskWeightConfigErrors = useMemo(() => validateRiskWeightConfig(riskWeightConfig), [riskWeightConfig])
+
+  const updateRiskWeight = (key, value) => {
+    setRiskWeightConfig((current) => sanitizeRiskWeightConfig({
+      ...current,
+      weights: { ...current.weights, [key]: value },
+    }))
+    appendAuditEntries(buildAuditEntry({ code: 'SYSTEM', name: 'リスク重み設定', fieldName: `riskWeight.${key}`, previousValue: riskWeightConfig.weights?.[key] || '', newValue: value, changeSource: 'rule_config', ruleVersion: riskWeightConfig.riskScoreVersion }))
+  }
+
+  const updateRiskLevel = (key, value) => {
+    setRiskWeightConfig((current) => sanitizeRiskWeightConfig({
+      ...current,
+      levels: { ...current.levels, [key]: value },
+    }))
+    appendAuditEntries(buildAuditEntry({ code: 'SYSTEM', name: 'リスクレベル設定', fieldName: `riskLevel.${key}`, previousValue: riskWeightConfig.levels?.[key] || '', newValue: value, changeSource: 'rule_config', ruleVersion: riskWeightConfig.riskScoreVersion }))
+  }
+
+  const updateRiskWeightMeta = (fieldName, value) => {
+    setRiskWeightConfig((current) => sanitizeRiskWeightConfig({ ...current, [fieldName]: value }))
+    appendAuditEntries(buildAuditEntry({ code: 'SYSTEM', name: 'リスク重み設定', fieldName, previousValue: riskWeightConfig[fieldName] || '', newValue: value, changeSource: 'rule_config', ruleVersion: riskWeightConfig.riskScoreVersion }))
+  }
+
+  const resetRiskWeightConfig = () => {
+    setRiskWeightConfig(sanitizeRiskWeightConfig(DEFAULT_RISK_WEIGHT_CONFIG))
+    appendAuditEntries(buildAuditEntry({ code: 'SYSTEM', name: 'リスク重み設定', fieldName: 'riskWeightConfig', previousValue: 'custom', newValue: 'default', changeSource: 'rule_config', ruleVersion: RISK_SCORE_VERSION }))
+  }
+
   const riskPriorityList = useMemo(() => {
     return enrichedStocks
-      .map((stock) => calculateRiskPriority(stock, stockDecisionHistoryMap.get(stock.code) || []))
+      .map((stock) => calculateRiskPriority(stock, stockDecisionHistoryMap.get(stock.code) || [], riskWeightConfig))
       .sort((a, b) => b.riskPriorityScore - a.riskPriorityScore || (b.marketValueJPY || 0) - (a.marketValueJPY || 0))
       .map((stock, index) => ({ ...stock, riskPriorityRank: index + 1 }))
-  }, [enrichedStocks, stockDecisionHistoryMap])
+  }, [enrichedStocks, stockDecisionHistoryMap, riskWeightConfig])
 
   const riskPriorityStats = useMemo(() => buildRiskPriorityStats(riskPriorityList), [riskPriorityList])
 
@@ -2725,6 +2898,7 @@ export default function PortfolioManagementDashboard() {
       decisionHistory,
       auditLog,
       operationalChecklist,
+      riskWeightConfig,
     })
     const backupMeta = buildBackupMeta({ payload: payloadForHash, stocks, decisionHistory, auditLog, operationalChecklist })
     const backup = {
@@ -2738,6 +2912,8 @@ export default function PortfolioManagementDashboard() {
       decisionHistory,
       auditLog,
       operationalChecklist,
+      riskWeightConfig,
+      riskScoreVersion: riskWeightConfig.riskScoreVersion,
       checklistSchemaVersion: CHECKLIST_SCHEMA_VERSION,
       auditLogVersion: AUDIT_LOG_VERSION,
       backupMeta,
@@ -2785,6 +2961,7 @@ export default function PortfolioManagementDashboard() {
         decisionHistory: Array.isArray(parsed?.decisionHistory) ? parsed.decisionHistory : [],
         auditLog: Array.isArray(parsed?.auditLog) ? parsed.auditLog : [],
         operationalChecklist: sanitizeChecklist(parsed?.operationalChecklist),
+        riskWeightConfig: sanitizeRiskWeightConfig(parsed?.riskWeightConfig),
       })
       const calculatedRestoreHash = buildIntegrityHash(restoreHashPayload)
       const declaredRestoreHash = parsed?.backupMeta?.backupIntegrityHash ? String(parsed.backupMeta.backupIntegrityHash) : ''
@@ -2898,6 +3075,11 @@ export default function PortfolioManagementDashboard() {
       }
       if (parsed.operationalChecklist && typeof parsed.operationalChecklist === 'object') {
         setOperationalChecklist(sanitizeChecklist(parsed.operationalChecklist))
+      }
+      if (parsed.riskWeightConfig && typeof parsed.riskWeightConfig === 'object') {
+        const restoredRiskConfig = sanitizeRiskWeightConfig(parsed.riskWeightConfig)
+        setRiskWeightConfig(restoredRiskConfig)
+        auditEntries.push(buildAuditEntry({ code: 'SYSTEM', name: 'リスク重み復元', fieldName: 'riskWeightConfig', previousValue: riskWeightConfig.riskScoreVersion || '', newValue: restoredRiskConfig.riskScoreVersion || '', changeSource: 'json_restore', decisionBefore: '', decisionAfter: '' }))
       }
       setImportMessage(`JSON取込完了: ${importedCount}件反映 / 未登録コード ${unknownCount}件 / 数値不正 ${invalidCount}件 / 履歴 ${Array.isArray(parsed.decisionHistory) ? parsed.decisionHistory.length : 0}件 / 復元ハッシュ ${calculatedRestoreHash}${restoreWarnings.length > 0 ? ` / 警告 ${restoreWarnings.length}件` : ''}`)
     } catch (error) {
@@ -3107,6 +3289,13 @@ export default function PortfolioManagementDashboard() {
         successRate: outcomeStats.successRate,
         failureRate: outcomeStats.failureRate,
       },
+      riskWeightConfig: {
+        riskScoreVersion: riskWeightConfig.riskScoreVersion,
+        riskWeightRegime: riskWeightConfig.riskWeightRegime,
+        riskWeightReviewedAt: riskWeightConfig.riskWeightReviewedAt,
+        riskWeightChangeReason: riskWeightConfig.riskWeightChangeReason,
+        riskWeightConfigErrors,
+      },
       integrity: {
         dataCompletenessScore: integritySummary.dataCompletenessScore,
         missingCriticalFieldCount: integritySummary.missingCriticalFieldCount,
@@ -3291,6 +3480,17 @@ export default function PortfolioManagementDashboard() {
     downloadTextFile(`\uFEFF${csv}`, 'portfolio-operational-checklist.csv', 'text/csv;charset=utf-8;')
   }
 
+
+
+  const exportRiskWeightConfigCsv = () => {
+    const header = ['type', 'key', 'label', 'value', 'min', 'max', 'riskScoreVersion', 'riskWeightRegime', 'riskWeightReviewedAt', 'riskWeightChangeReason']
+    const rows = [
+      ...riskWeightDefinitions.map((definition) => ['weight', definition.key, definition.label, riskWeightConfig.weights?.[definition.key] ?? '', definition.min, definition.max, riskWeightConfig.riskScoreVersion, riskWeightConfig.riskWeightRegime, riskWeightConfig.riskWeightReviewedAt, riskWeightConfig.riskWeightChangeReason]),
+      ...riskLevelDefinitions.map((definition) => ['level', definition.key, definition.label, riskWeightConfig.levels?.[definition.key] ?? '', definition.min, definition.max, riskWeightConfig.riskScoreVersion, riskWeightConfig.riskWeightRegime, riskWeightConfig.riskWeightReviewedAt, riskWeightConfig.riskWeightChangeReason]),
+    ]
+    const csv = [header, ...rows].map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(',')).join('\n')
+    downloadTextFile(`﻿${csv}`, 'portfolio-risk-weight-config.csv', 'text/csv;charset=utf-8;')
+  }
 
   const exportRiskPriorityCsv = () => {
     const header = ['rank', 'code', 'name', 'market', 'group', 'decision', 'severity', 'riskPriorityLevel', 'riskPriorityScore', 'positionWeight', 'sectorWeight', 'unrealizedGainRate', 'topRiskDrivers']
@@ -3551,6 +3751,66 @@ export default function PortfolioManagementDashboard() {
             </div>
           </div>
 
+
+          <div className="bg-white/80 backdrop-blur-3xl border border-purple-100 rounded-[32px] shadow-[0_20px_60px_rgba(15,23,42,0.08)] p-6">
+            <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <h2 className="text-2xl font-bold text-slate-900">リスク重み設定</h2>
+                <p className="text-xs font-semibold text-slate-500">リスク優先度スコアの重み・閾値・バージョンを固定値から設定管理へ移行。変更は監査ログに記録。</p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button type="button" onClick={exportRiskWeightConfigCsv} className="rounded-2xl border border-purple-300 bg-purple-50 px-4 py-2 text-xs font-bold text-purple-700 hover:bg-purple-100">重み設定CSV</button>
+                <button type="button" onClick={resetRiskWeightConfig} className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-50">初期値へ戻す</button>
+              </div>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <label className="block rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs font-semibold text-slate-600">
+                リスクスコア版
+                <input value={riskWeightConfig.riskScoreVersion} onChange={(event) => updateRiskWeightMeta('riskScoreVersion', event.target.value)} className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-900" />
+              </label>
+              <label className="block rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs font-semibold text-slate-600">
+                市況局面
+                <select value={riskWeightConfig.riskWeightRegime} onChange={(event) => updateRiskWeightMeta('riskWeightRegime', event.target.value)} className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-900">
+                  {riskRegimeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                </select>
+              </label>
+              <label className="block rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs font-semibold text-slate-600">
+                重み確認日
+                <input type="date" value={riskWeightConfig.riskWeightReviewedAt} onChange={(event) => updateRiskWeightMeta('riskWeightReviewedAt', event.target.value)} className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-900" />
+              </label>
+              <label className="block rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs font-semibold text-slate-600">
+                変更理由
+                <input value={riskWeightConfig.riskWeightChangeReason} onChange={(event) => updateRiskWeightMeta('riskWeightChangeReason', event.target.value)} className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-900" />
+              </label>
+            </div>
+
+            <div className="mt-4 grid gap-4 md:grid-cols-3">
+              {riskLevelDefinitions.map((definition) => (
+                <label key={definition.key} className="block rounded-2xl border border-slate-200 bg-white p-3 text-xs font-semibold text-slate-600">
+                  {definition.label}
+                  <input type="number" value={riskWeightConfig.levels?.[definition.key] ?? ''} onChange={(event) => updateRiskLevel(definition.key, event.target.value)} className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-bold text-slate-900" />
+                </label>
+              ))}
+            </div>
+
+            <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              {riskWeightDefinitions.map((definition) => (
+                <label key={definition.key} className="block rounded-2xl border border-slate-200 bg-white p-3 text-xs font-semibold text-slate-600">
+                  {definition.label}
+                  <input type="number" value={riskWeightConfig.weights?.[definition.key] ?? ''} onChange={(event) => updateRiskWeight(definition.key, event.target.value)} className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-bold text-slate-900" />
+                </label>
+              ))}
+            </div>
+
+            {riskWeightConfigErrors.length > 0 && (
+              <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 p-4 text-xs font-bold text-red-800">
+                <div className="mb-2 text-sm">RISK_WEIGHT_CONFIG_REQUIRED</div>
+                {riskWeightConfigErrors.map((item) => <div key={item}>・{item}</div>)}
+              </div>
+            )}
+          </div>
+
           <div className="bg-white/80 backdrop-blur-3xl border border-red-100 rounded-[32px] shadow-[0_20px_60px_rgba(15,23,42,0.08)] p-6">
             <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
@@ -3561,7 +3821,7 @@ export default function PortfolioManagementDashboard() {
             </div>
 
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
-              <MetricCard label="最高リスク点" value={riskPriorityStats.topScore} subLabel={riskPriorityList[0] ? `${riskPriorityList[0].code} ${riskPriorityList[0].name}` : '対象なし'} tone={riskPriorityStats.topScore >= 120 ? 'red' : riskPriorityStats.topScore >= 80 ? 'amber' : 'emerald'} />
+              <MetricCard label="最高リスク点" value={riskPriorityStats.topScore} subLabel={riskPriorityList[0] ? `${riskPriorityList[0].code} ${riskPriorityList[0].name}` : '対象なし'} tone={riskPriorityStats.topScore >= getRiskLevelThreshold(riskWeightConfig, 'critical') ? 'red' : riskPriorityStats.topScore >= getRiskLevelThreshold(riskWeightConfig, 'high') ? 'amber' : 'emerald'} />
               <MetricCard label="CRITICAL" value={riskPriorityStats.critical} subLabel="即確認対象" tone={riskPriorityStats.critical > 0 ? 'red' : 'emerald'} />
               <MetricCard label="HIGH" value={riskPriorityStats.high} subLabel="優先確認対象" tone={riskPriorityStats.high > 0 ? 'amber' : 'emerald'} />
               <MetricCard label="MEDIUM" value={riskPriorityStats.medium} subLabel="通常確認対象" tone="sky" />
