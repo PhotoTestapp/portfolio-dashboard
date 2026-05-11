@@ -6,6 +6,21 @@ const marketOrder = ['日本株', '米国株']
 const STORAGE_KEY = 'portfolio-dashboard-holdings-v1'
 const SETTINGS_KEY = 'portfolio-dashboard-settings-v1'
 const DEFAULT_USD_JPY = 155
+const RULE_ENGINE_VERSION = '2026.05-rule-profile-v1'
+const DEFAULT_RULE_CONFIG = {
+  ruleVersion: RULE_ENGINE_VERSION,
+  ruleReviewedAt: '',
+  ruleChangeReason: '',
+  ruleRiskRegime: 'NORMAL',
+  maxPositionWeight: '8',
+  maxSectorWeight: '25',
+  maxPositionBuyWeight: '5',
+  maxSectorBuyWeight: '20',
+  priceMaxAgeDays: '7',
+  financialMaxAgeDays: '100',
+  fxMaxAgeDays: '7',
+}
+const allowedRiskRegimes = ['RISK_ON', 'NORMAL', 'RISK_OFF']
 
 const decisionLabels = {
   INVALID_DATA: 'INVALID_DATA',
@@ -14,6 +29,7 @@ const decisionLabels = {
   MISMATCHED_EVIDENCE: 'MISMATCHED_EVIDENCE',
   MULTIPLE_EVIDENCE_VALUES: 'MULTIPLE_EVIDENCE_VALUES',
   PROFILE_DATA_REQUIRED: 'PROFILE_DATA_REQUIRED',
+  RULE_CONFIG_REQUIRED: 'RULE_CONFIG_REQUIRED',
   STALE_DATA: 'STALE_DATA',
   BUY: 'BUY',
   HOLD: 'HOLD',
@@ -30,6 +46,7 @@ const decisionTone = {
   MISMATCHED_EVIDENCE: 'bg-rose-50 border-rose-300 text-rose-800',
   MULTIPLE_EVIDENCE_VALUES: 'bg-pink-50 border-pink-300 text-pink-800',
   PROFILE_DATA_REQUIRED: 'bg-indigo-50 border-indigo-300 text-indigo-800',
+  RULE_CONFIG_REQUIRED: 'bg-cyan-50 border-cyan-300 text-cyan-800',
   STALE_DATA: 'bg-orange-50 border-orange-300 text-orange-800',
   BUY: 'bg-emerald-50 border-emerald-300 text-emerald-800',
   HOLD: 'bg-sky-50 border-sky-300 text-sky-800',
@@ -132,11 +149,76 @@ const validationRules = {
 }
 
 const usdJpyRule = { label: 'USD/JPY', min: 50, max: 300, minExclusive: false }
-const staleRules = {
-  price: { label: '現在価格', maxAgeDays: 7 },
-  financial: { label: '財務データ', maxAgeDays: 100 },
-  fx: { label: 'USD/JPY', maxAgeDays: 7 },
+
+const ruleConfigNumericRules = {
+  maxPositionWeight: { label: '最大個別銘柄比率', min: 1, max: 50, minExclusive: false },
+  maxSectorWeight: { label: '最大セクター比率', min: 5, max: 80, minExclusive: false },
+  maxPositionBuyWeight: { label: '買い許容個別比率', min: 0, max: 50, minExclusive: false },
+  maxSectorBuyWeight: { label: '買い許容セクター比率', min: 0, max: 80, minExclusive: false },
+  priceMaxAgeDays: { label: '価格期限日数', min: 1, max: 30, minExclusive: false },
+  financialMaxAgeDays: { label: '財務期限日数', min: 30, max: 400, minExclusive: false },
+  fxMaxAgeDays: { label: '為替期限日数', min: 1, max: 30, minExclusive: false },
 }
+
+const normalizeRuleConfig = (settings = {}) => ({
+  ...DEFAULT_RULE_CONFIG,
+  ...(settings.ruleConfig || {}),
+})
+
+const getRuleNumber = (ruleConfig, field) => {
+  const value = toNumber(ruleConfig[field])
+  const fallback = toNumber(DEFAULT_RULE_CONFIG[field])
+  return value ?? fallback
+}
+
+const validateRuleConfig = (ruleConfig) => {
+  const errors = []
+  const fieldErrors = {}
+  if (!String(ruleConfig.ruleVersion || '').trim()) {
+    fieldErrors.ruleVersion = 'ルールバージョンが未入力'
+    errors.push('ルールバージョンが未入力')
+  }
+  if (!allowedRiskRegimes.includes(ruleConfig.ruleRiskRegime)) {
+    fieldErrors.ruleRiskRegime = 'リスク局面が不正'
+    errors.push('リスク局面が不正')
+  }
+  const reviewedAtError = validateDateValue('ルール確認日', ruleConfig.ruleReviewedAt)
+  if (reviewedAtError) {
+    fieldErrors.ruleReviewedAt = reviewedAtError
+    errors.push(reviewedAtError)
+  } else {
+    const age = daysSince(ruleConfig.ruleReviewedAt)
+    if (age !== null && age > 180) {
+      fieldErrors.ruleReviewedAt = `ルール確認日が${age}日前（期限180日）`
+      errors.push(`ルール確認日が${age}日前（期限180日）`)
+    }
+  }
+  if (!String(ruleConfig.ruleChangeReason || '').trim() || String(ruleConfig.ruleChangeReason || '').trim().length < 5) {
+    fieldErrors.ruleChangeReason = '変更理由・根拠が5文字未満'
+    errors.push('変更理由・根拠が5文字未満')
+  }
+  for (const [field, rule] of Object.entries(ruleConfigNumericRules)) {
+    const error = validateNumericValue(field, ruleConfig[field], rule)
+    if (error) {
+      fieldErrors[field] = error
+      errors.push(error)
+    }
+  }
+  const maxPosition = getRuleNumber(ruleConfig, 'maxPositionWeight')
+  const maxPositionBuy = getRuleNumber(ruleConfig, 'maxPositionBuyWeight')
+  const maxSector = getRuleNumber(ruleConfig, 'maxSectorWeight')
+  const maxSectorBuy = getRuleNumber(ruleConfig, 'maxSectorBuyWeight')
+  if (maxPositionBuy >= maxPosition) {
+    fieldErrors.maxPositionBuyWeight = '買い許容個別比率は最大個別比率未満にする'
+    errors.push('買い許容個別比率は最大個別比率未満にする')
+  }
+  if (maxSectorBuy >= maxSector) {
+    fieldErrors.maxSectorBuyWeight = '買い許容セクター比率は最大セクター比率未満にする'
+    errors.push('買い許容セクター比率は最大セクター比率未満にする')
+  }
+  return { errors: [...new Set(errors)], fieldErrors }
+}
+
 
 const dataTypeOptions = [
   { value: 'actual', label: '実績' },
@@ -720,26 +802,29 @@ const getMissingRequiredData = (stock) => {
   return missing
 }
 
-const getStaleDataReasons = (stock) => {
+const getStaleDataReasons = (stock, ruleConfig) => {
+  const priceMaxAgeDays = getRuleNumber(ruleConfig, 'priceMaxAgeDays')
+  const financialMaxAgeDays = getRuleNumber(ruleConfig, 'financialMaxAgeDays')
+  const fxMaxAgeDays = getRuleNumber(ruleConfig, 'fxMaxAgeDays')
   const reasons = []
 
   if (stock.currentPrice !== null) {
     const age = daysSince(stock.priceUpdatedAt)
     if (age === null) reasons.push('価格更新日が未入力')
-    else if (age > staleRules.price.maxAgeDays) reasons.push(`現在価格が${age}日前のデータ（期限${staleRules.price.maxAgeDays}日）`)
+    else if (age > priceMaxAgeDays) reasons.push(`現在価格が${age}日前のデータ（期限${priceMaxAgeDays}日）`)
   }
 
   const hasFinancialData = [stock.payoutRatio, stock.operatingCashFlowYoY, stock.revenueYoY, stock.epsYoY, stock.equityRatio, stock.debtToEquity, stock.dividendCut].some((value) => value !== null)
   if (hasFinancialData) {
     const age = daysSince(stock.financialUpdatedAt)
     if (age === null) reasons.push('財務更新日が未入力')
-    else if (age > staleRules.financial.maxAgeDays) reasons.push(`財務データが${age}日前のデータ（期限${staleRules.financial.maxAgeDays}日）`)
+    else if (age > financialMaxAgeDays) reasons.push(`財務データが${age}日前のデータ（期限${financialMaxAgeDays}日）`)
   }
 
   if (stock.currency === 'USD' && (stock.currentPrice !== null || stock.hasPosition)) {
     const age = daysSince(stock.fxUpdatedAt)
     if (age === null) reasons.push('USD/JPY更新日が未入力')
-    else if (age > staleRules.fx.maxAgeDays) reasons.push(`USD/JPYが${age}日前のデータ（期限${staleRules.fx.maxAgeDays}日）`)
+    else if (age > fxMaxAgeDays) reasons.push(`USD/JPYが${age}日前のデータ（期限${fxMaxAgeDays}日）`)
   }
 
   return [...new Set(reasons)]
@@ -799,11 +884,13 @@ const getSellReasonsByProfile = (stock) => {
   return reasons
 }
 
-const getReduceReasonsByProfile = (stock) => {
+const getReduceReasonsByProfile = (stock, ruleConfig) => {
+  const maxPositionWeight = getRuleNumber(ruleConfig, 'maxPositionWeight')
+  const maxSectorWeight = getRuleNumber(ruleConfig, 'maxSectorWeight')
   const profile = stock.ruleProfile || 'GENERAL'
   const reasons = []
-  if (stock.positionWeight >= 8) reasons.push('個別銘柄比率8%以上')
-  if (stock.sectorWeight >= 25) reasons.push('同一セクター比率25%以上')
+  if (stock.positionWeight >= maxPositionWeight) reasons.push(`個別銘柄比率${maxPositionWeight}%以上`)
+  if (stock.sectorWeight >= maxSectorWeight) reasons.push(`同一セクター比率${maxSectorWeight}%以上`)
   if (stock.hasPosition && stock.unrealizedGainRate !== null && stock.unrealizedGainRate <= -20) reasons.push('含み損-20%以下')
 
   switch (profile) {
@@ -849,11 +936,13 @@ const getReduceReasonsByProfile = (stock) => {
   return reasons
 }
 
-const getBuyChecksByProfile = (stock) => {
+const getBuyChecksByProfile = (stock, ruleConfig) => {
+  const maxPositionBuyWeight = getRuleNumber(ruleConfig, 'maxPositionBuyWeight')
+  const maxSectorBuyWeight = getRuleNumber(ruleConfig, 'maxSectorBuyWeight')
   const profile = stock.ruleProfile || 'GENERAL'
   const common = [
-    { passed: stock.positionWeight < 5, reason: '個別銘柄比率5%未満' },
-    { passed: stock.sectorWeight < 20, reason: '同一セクター比率20%未満' },
+    { passed: stock.positionWeight < maxPositionBuyWeight, reason: `個別銘柄比率${maxPositionBuyWeight}%未満` },
+    { passed: stock.sectorWeight < maxSectorBuyWeight, reason: `同一セクター比率${maxSectorBuyWeight}%未満` },
     { passed: stock.dividendCut === false, reason: '減配なし' },
   ]
 
@@ -874,8 +963,8 @@ const getBuyChecksByProfile = (stock) => {
         { passed: stock.reitOccupancyRate >= 95, reason: 'REIT: 稼働率95%以上' },
         { passed: stock.reitFfoYoY >= 0, reason: 'REIT: FFO前年比0%以上' },
         { passed: stock.dividendYield >= 4, reason: 'REIT: 分配金利回り4%以上' },
-        { passed: stock.positionWeight < 5, reason: '個別銘柄比率5%未満' },
-        { passed: stock.sectorWeight < 20, reason: '同一セクター比率20%未満' },
+        { passed: stock.positionWeight < maxPositionBuyWeight, reason: `個別銘柄比率${maxPositionBuyWeight}%未満` },
+        { passed: stock.sectorWeight < maxSectorBuyWeight, reason: `同一セクター比率${maxSectorBuyWeight}%未満` },
         { passed: stock.dividendCut === false, reason: '分配金減額なし' },
       ]
     case 'UTILITY':
@@ -902,8 +991,8 @@ const getBuyChecksByProfile = (stock) => {
         { passed: stock.operatingMargin >= 10, reason: 'GROWTH_TECH: 営業利益率10%以上' },
         { passed: stock.epsYoY >= 0, reason: 'GROWTH_TECH: EPS前年比0%以上' },
         { passed: stock.operatingCashFlowYoY >= 0, reason: 'GROWTH_TECH: 営業CF前年比0%以上' },
-        { passed: stock.positionWeight < 5, reason: '個別銘柄比率5%未満' },
-        { passed: stock.sectorWeight < 20, reason: '同一セクター比率20%未満' },
+        { passed: stock.positionWeight < maxPositionBuyWeight, reason: `個別銘柄比率${maxPositionBuyWeight}%未満` },
+        { passed: stock.sectorWeight < maxSectorBuyWeight, reason: `同一セクター比率${maxSectorBuyWeight}%未満` },
       ]
     case 'HEALTHCARE':
       return [
@@ -936,7 +1025,7 @@ const getBuyChecksByProfile = (stock) => {
   }
 }
 
-const judgeStock = (stock) => {
+const judgeStock = (stock, ruleConfig, ruleConfigValidation) => {
   if (stock.validationErrors?.length > 0) {
     return {
       decision: 'INVALID_DATA',
@@ -977,7 +1066,20 @@ const judgeStock = (stock) => {
     }
   }
 
-  const staleReasons = getStaleDataReasons(stock)
+  const profileDataReasons = getProfileDataRequiredReasons(stock)
+  if (profileDataReasons.length > 0) {
+    return { decision: 'PROFILE_DATA_REQUIRED', severity: 'HIGH', reasons: [`判定プロファイル: ${stock.ruleProfile || 'GENERAL'}`, ...profileDataReasons] }
+  }
+
+  if (ruleConfigValidation?.errors?.length > 0) {
+    return {
+      decision: 'RULE_CONFIG_REQUIRED',
+      severity: 'HIGH',
+      reasons: ['ルール設定が未確認または不正', ...ruleConfigValidation.errors],
+    }
+  }
+
+  const staleReasons = getStaleDataReasons(stock, ruleConfig)
   if (staleReasons.length > 0) {
     return {
       decision: 'STALE_DATA',
@@ -996,10 +1098,6 @@ const judgeStock = (stock) => {
   }
 
   const profile = stock.ruleProfile || 'GENERAL'
-  const profileDataReasons = getProfileDataRequiredReasons(stock)
-  if (profileDataReasons.length > 0) {
-    return { decision: 'PROFILE_DATA_REQUIRED', severity: 'HIGH', reasons: [`判定プロファイル: ${profile}`, ...profileDataReasons] }
-  }
 
   const sellReasons = getSellReasonsByProfile(stock)
 
@@ -1007,13 +1105,13 @@ const judgeStock = (stock) => {
     return { decision: 'SELL', severity: 'CRITICAL', reasons: [`判定プロファイル: ${profile}`, ...sellReasons] }
   }
 
-  const reduceReasons = getReduceReasonsByProfile(stock)
+  const reduceReasons = getReduceReasonsByProfile(stock, ruleConfig)
 
   if (reduceReasons.length > 0) {
     return { decision: 'REDUCE', severity: 'HIGH', reasons: [`判定プロファイル: ${profile}`, ...reduceReasons] }
   }
 
-  const buyChecks = getBuyChecksByProfile(stock)
+  const buyChecks = getBuyChecksByProfile(stock, ruleConfig)
 
   if (buyChecks.every((check) => check.passed)) {
     return {
@@ -1426,15 +1524,25 @@ export default function PortfolioManagementDashboard() {
   const [settings, setSettings] = useState(() => {
     try {
       const saved = window.localStorage.getItem(SETTINGS_KEY)
-      return saved ? JSON.parse(saved) : { usdJpy: String(DEFAULT_USD_JPY), fxUpdatedAt: '' }
+      return saved ? JSON.parse(saved) : { usdJpy: String(DEFAULT_USD_JPY), fxUpdatedAt: '', ruleConfig: DEFAULT_RULE_CONFIG }
     } catch {
-      return { usdJpy: String(DEFAULT_USD_JPY), fxUpdatedAt: '' }
+      return { usdJpy: String(DEFAULT_USD_JPY), fxUpdatedAt: '', ruleConfig: DEFAULT_RULE_CONFIG }
     }
   })
   const usdJpyInput = settings.usdJpy ?? String(DEFAULT_USD_JPY)
   const fxUpdatedAtInput = settings.fxUpdatedAt ?? ''
   const setUsdJpyInput = (value) => setSettings((current) => ({ ...current, usdJpy: value }))
   const setFxUpdatedAtInput = (value) => setSettings((current) => ({ ...current, fxUpdatedAt: value }))
+  const ruleConfig = useMemo(() => normalizeRuleConfig(settings), [settings])
+  const ruleConfigValidation = useMemo(() => validateRuleConfig(ruleConfig), [ruleConfig])
+  const setRuleConfigField = (field, value) => setSettings((current) => ({
+    ...current,
+    ruleConfig: { ...normalizeRuleConfig(current), [field]: value },
+  }))
+  const applyDefaultRuleConfig = () => setSettings((current) => ({
+    ...current,
+    ruleConfig: { ...DEFAULT_RULE_CONFIG, ruleReviewedAt: todayInputDate(), ruleChangeReason: '初期ルールセット確認' },
+  }))
   const [holdings, setHoldings] = useState(() => {
     try {
       const saved = window.localStorage.getItem(STORAGE_KEY)
@@ -1589,9 +1697,9 @@ export default function PortfolioManagementDashboard() {
       const positionWeight = totalMarketValueJPY > 0 && stock.marketValueJPY ? (stock.marketValueJPY / totalMarketValueJPY) * 100 : 0
       const sectorWeight = totalMarketValueJPY > 0 ? ((groupTotals.get(stock.group) || 0) / totalMarketValueJPY) * 100 : 0
       const withWeights = { ...stock, positionWeight, sectorWeight }
-      return { ...withWeights, decisionResult: judgeStock(withWeights) }
+      return { ...withWeights, ruleConfigVersion: ruleConfig.ruleVersion, ruleRiskRegime: ruleConfig.ruleRiskRegime, decisionResult: judgeStock(withWeights, ruleConfig, ruleConfigValidation) }
     })
-  }, [stocks, holdings, usdJpy, usdJpyInput, fxUpdatedAtInput])
+  }, [stocks, holdings, usdJpy, usdJpyInput, fxUpdatedAtInput, ruleConfig, ruleConfigValidation])
 
   const filteredStocks = useMemo(() => {
     const normalizedKeyword = keyword.trim().toLowerCase()
@@ -1617,6 +1725,8 @@ export default function PortfolioManagementDashboard() {
           stock.sellCondition,
           stock.currency,
           stock.decisionResult?.decision,
+          stock.ruleConfigVersion,
+          stock.ruleRiskRegime,
           stock.sourceName,
           stock.sourceUrl,
           stock.fiscalPeriod,
@@ -1867,7 +1977,7 @@ export default function PortfolioManagementDashboard() {
       'shares', 'averagePrice', 'currentPrice', 'annualDividend',
       'payoutRatio', 'operatingCashFlowYoY', 'revenueYoY', 'epsYoY', 'equityRatio', 'debtToEquity', 'dividendCut', 'ruleProfile',
       'bankCapitalRatio', 'bankNplRatio', 'bankCreditCostRatio', 'bankNetInterestMargin', 'reitLtv', 'reitOccupancyRate', 'reitNavRatio', 'reitFfoYoY', 'utilityCapexToSales', 'utilityFuelCostYoY', 'cyclicalMarketIndexYoY', 'inventoryYoY', 'capacityUtilization', 'growthFcfYoY', 'operatingMargin', 'rdToSales', 'pipelineProgress', 'financialAumYoY', 'financialCreditCostRatio',
-      'priceUpdatedAt', 'financialUpdatedAt', 'fxUpdatedAt',
+      'priceUpdatedAt', 'financialUpdatedAt', 'fxUpdatedAt', 'ruleVersion', 'ruleRiskRegime', 'ruleReviewedAt', 'ruleChangeReason',
       'sourceName', 'sourceUrl', 'fiscalPeriod', 'dataType', 'confirmedAt',
       'sourcePage', 'sourceQuote', 'selectedEvidenceValue', 'sourceMetricName', 'sourceUnit', 'evidenceMemo',
       'decision', 'severity', 'decisionReasons', 'validationErrors', 'verificationErrors', 'evidenceErrors', 'multipleEvidenceValueErrors', 'evidenceMatchErrors',
@@ -1914,6 +2024,10 @@ export default function PortfolioManagementDashboard() {
       stock.holding.priceUpdatedAt || '',
       stock.holding.financialUpdatedAt || '',
       stock.fxUpdatedAt || '',
+      ruleConfig.ruleVersion || '',
+      ruleConfig.ruleRiskRegime || '',
+      ruleConfig.ruleReviewedAt || '',
+      ruleConfig.ruleChangeReason || '',
       stock.holding.sourceName || '',
       stock.holding.sourceUrl || '',
       stock.holding.fiscalPeriod || '',
@@ -1957,10 +2071,11 @@ export default function PortfolioManagementDashboard() {
   const exportJson = () => {
     const backup = {
       app: 'portfolio-dashboard',
-      version: 9,
+      version: 10,
       exportedAt: new Date().toISOString(),
       usdJpy: usdJpyInput,
       fxUpdatedAt: fxUpdatedAtInput,
+      ruleConfig,
       holdings,
       rules: {
         sell: ['減配あり', '配当性向100%以上', '営業CF前年比-30%以下', 'EPS前年比-30%以下', '自己資本比率20%未満', '有利子負債倍率5倍以上'],
@@ -1973,6 +2088,15 @@ export default function PortfolioManagementDashboard() {
         multipleEvidenceValues: ['引用文に複数数値がある場合は採用証跡値が必須', '採用証跡値が引用文内数値と一致しない場合は判定停止'],
         mismatchedEvidence: ['採用証跡値と入力値の不一致', '許容差超過'],
         ruleProfiles: ruleProfileOptions.map((option) => option.value),
+        ruleVersion: ruleConfig.ruleVersion,
+        ruleReviewedAt: ruleConfig.ruleReviewedAt,
+        ruleRiskRegime: ruleConfig.ruleRiskRegime,
+        concentrationLimits: {
+          maxPositionWeight: ruleConfig.maxPositionWeight,
+          maxSectorWeight: ruleConfig.maxSectorWeight,
+          maxPositionBuyWeight: ruleConfig.maxPositionBuyWeight,
+          maxSectorBuyWeight: ruleConfig.maxSectorBuyWeight,
+        },
       },
     }
     downloadTextFile(JSON.stringify(backup, null, 2), 'portfolio-dashboard-backup.json', 'application/json;charset=utf-8;')
@@ -2052,6 +2176,13 @@ export default function PortfolioManagementDashboard() {
       }
       if (parsed.fxUpdatedAt !== undefined && validateDateValue('USD/JPY更新日', parsed.fxUpdatedAt) === null) {
         setFxUpdatedAtInput(String(parsed.fxUpdatedAt))
+      }
+      if (parsed.ruleConfig && typeof parsed.ruleConfig === 'object' && !Array.isArray(parsed.ruleConfig)) {
+        const nextRuleConfig = { ...DEFAULT_RULE_CONFIG, ...parsed.ruleConfig }
+        const check = validateRuleConfig(nextRuleConfig)
+        if (check.errors.length === 0) {
+          setSettings((current) => ({ ...current, ruleConfig: nextRuleConfig }))
+        }
       }
       setImportMessage(`JSON取込完了: ${importedCount}件反映 / 未登録コード ${unknownCount}件 / 数値不正 ${invalidCount}件`)
     } catch (error) {
@@ -2142,6 +2273,51 @@ export default function PortfolioManagementDashboard() {
 
               {importMessage && <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm font-semibold text-sky-800">{importMessage}</div>}
 
+              <div className="rounded-3xl border border-cyan-200 bg-cyan-50/70 p-5">
+                <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <h2 className="text-lg font-bold text-cyan-900">ルール設定・バージョン管理</h2>
+                    <p className="text-xs font-semibold text-cyan-700">判定結果に使った閾値・確認日・変更理由を固定する。未確認なら RULE_CONFIG_REQUIRED で停止。</p>
+                  </div>
+                  <button type="button" onClick={applyDefaultRuleConfig} className="rounded-2xl border border-cyan-300 bg-white px-4 py-2 text-xs font-bold text-cyan-800 hover:bg-cyan-100">標準ルールを確認済みにする</button>
+                </div>
+                <div className="grid gap-3 md:grid-cols-4">
+                  <InputCell label="ルールバージョン" value={ruleConfig.ruleVersion} onChange={(value) => setRuleConfigField('ruleVersion', value)} error={ruleConfigValidation.fieldErrors.ruleVersion} />
+                  <label className="block">
+                    <span className={`mb-1 block text-[11px] font-semibold ${ruleConfigValidation.fieldErrors.ruleRiskRegime ? 'text-red-700' : 'text-slate-500'}`}>リスク局面</span>
+                    <select value={ruleConfig.ruleRiskRegime} onChange={(event) => setRuleConfigField('ruleRiskRegime', event.target.value)} className={`w-full rounded-xl border bg-white px-3 py-2 text-xs text-slate-900 outline-none transition focus:ring-4 ${ruleConfigValidation.fieldErrors.ruleRiskRegime ? 'border-red-300 focus:border-red-400 focus:ring-red-100' : 'border-slate-200 focus:border-sky-400 focus:ring-sky-100'}`}>
+                      <option value="RISK_ON">RISK_ON</option>
+                      <option value="NORMAL">NORMAL</option>
+                      <option value="RISK_OFF">RISK_OFF</option>
+                    </select>
+                  </label>
+                  <label className="block">
+                    <span className={`mb-1 block text-[11px] font-semibold ${ruleConfigValidation.fieldErrors.ruleReviewedAt ? 'text-red-700' : 'text-slate-500'}`}>ルール確認日</span>
+                    <input type="date" value={ruleConfig.ruleReviewedAt} onChange={(event) => setRuleConfigField('ruleReviewedAt', event.target.value)} className={`w-full rounded-xl border bg-white px-3 py-2 text-xs text-slate-900 outline-none transition focus:ring-4 ${ruleConfigValidation.fieldErrors.ruleReviewedAt ? 'border-red-300 focus:border-red-400 focus:ring-red-100' : 'border-slate-200 focus:border-sky-400 focus:ring-sky-100'}`} />
+                    {ruleConfigValidation.fieldErrors.ruleReviewedAt ? <span className="mt-1 block text-[10px] font-semibold text-red-600">{ruleConfigValidation.fieldErrors.ruleReviewedAt}</span> : null}
+                  </label>
+                  <InputCell label="変更理由・根拠" value={ruleConfig.ruleChangeReason} onChange={(value) => setRuleConfigField('ruleChangeReason', value)} error={ruleConfigValidation.fieldErrors.ruleChangeReason} />
+                  <InputCell label="最大個別比率(%)" value={ruleConfig.maxPositionWeight} onChange={(value) => setRuleConfigField('maxPositionWeight', value)} error={ruleConfigValidation.fieldErrors.maxPositionWeight} />
+                  <InputCell label="最大セクター比率(%)" value={ruleConfig.maxSectorWeight} onChange={(value) => setRuleConfigField('maxSectorWeight', value)} error={ruleConfigValidation.fieldErrors.maxSectorWeight} />
+                  <InputCell label="買い許容個別比率(%)" value={ruleConfig.maxPositionBuyWeight} onChange={(value) => setRuleConfigField('maxPositionBuyWeight', value)} error={ruleConfigValidation.fieldErrors.maxPositionBuyWeight} />
+                  <InputCell label="買い許容セクター比率(%)" value={ruleConfig.maxSectorBuyWeight} onChange={(value) => setRuleConfigField('maxSectorBuyWeight', value)} error={ruleConfigValidation.fieldErrors.maxSectorBuyWeight} />
+                  <InputCell label="価格期限(日)" value={ruleConfig.priceMaxAgeDays} onChange={(value) => setRuleConfigField('priceMaxAgeDays', value)} error={ruleConfigValidation.fieldErrors.priceMaxAgeDays} />
+                  <InputCell label="財務期限(日)" value={ruleConfig.financialMaxAgeDays} onChange={(value) => setRuleConfigField('financialMaxAgeDays', value)} error={ruleConfigValidation.fieldErrors.financialMaxAgeDays} />
+                  <InputCell label="為替期限(日)" value={ruleConfig.fxMaxAgeDays} onChange={(value) => setRuleConfigField('fxMaxAgeDays', value)} error={ruleConfigValidation.fieldErrors.fxMaxAgeDays} />
+                  <div className="rounded-2xl border border-cyan-200 bg-white p-3 text-xs font-semibold text-cyan-800">
+                    <div>判定ルール: {ruleConfig.ruleVersion || '未設定'}</div>
+                    <div>局面: {ruleConfig.ruleRiskRegime}</div>
+                    <div>エラー: {ruleConfigValidation.errors.length}件</div>
+                  </div>
+                </div>
+                {ruleConfigValidation.errors.length > 0 && (
+                  <div className="mt-3 rounded-2xl border border-red-200 bg-red-50 p-3 text-xs font-bold text-red-700">
+                    {ruleConfigValidation.errors.slice(0, 6).map((error) => <div key={error}>・{error}</div>)}
+                  </div>
+                )}
+              </div>
+
+
               <div className="flex flex-wrap gap-2 text-xs text-slate-500">
                 <span className="rounded-full bg-slate-100 px-3 py-1">市場: {selectedMarket === 'ALL' ? '全市場' : selectedMarket}</span>
                 <span className="rounded-full bg-slate-100 px-3 py-1">条件: {selectedConditions.length === 0 ? '指定なし' : selectedConditions.map((key) => conditionLabels[key]).join(' / ')}</span>
@@ -2170,6 +2346,7 @@ export default function PortfolioManagementDashboard() {
             <MetricCard label="MULTIPLE" value={portfolioSummary.decisionCounts.MULTIPLE_EVIDENCE_VALUES || 0} subLabel="採用値未指定" tone="amber" />
             <MetricCard label="MISMATCH" value={portfolioSummary.decisionCounts.MISMATCHED_EVIDENCE || 0} subLabel="証跡不一致" tone="red" />
             <MetricCard label="PROFILE" value={portfolioSummary.decisionCounts.PROFILE_DATA_REQUIRED || 0} subLabel="専用指標不足" tone="amber" />
+            <MetricCard label="RULE" value={portfolioSummary.decisionCounts.RULE_CONFIG_REQUIRED || 0} subLabel="ルール未確認" tone="amber" />
             <MetricCard label="STALE" value={portfolioSummary.decisionCounts.STALE_DATA || 0} subLabel="期限切れ" tone="amber" />
             <MetricCard label="SELL" value={portfolioSummary.decisionCounts.SELL || 0} subLabel="強制売却条件" tone="red" />
             <MetricCard label="REDUCE" value={portfolioSummary.decisionCounts.REDUCE || 0} subLabel="削減条件" tone="amber" />

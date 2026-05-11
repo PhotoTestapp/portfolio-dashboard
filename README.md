@@ -236,3 +236,33 @@ git push
 | FINANCIAL | 運用資産前年比、金融与信費用率 |
 
 専用指標が不足している場合は `PROFILE_DATA_REQUIRED` で通常判定を停止します。
+
+
+## ルール設定・バージョン管理
+
+この版では判定ルールの固定値を画面上で管理します。
+
+- `ruleVersion`: 判定ルールの版
+- `ruleReviewedAt`: ルール確認日。180日超または未入力は `RULE_CONFIG_REQUIRED`
+- `ruleChangeReason`: 変更理由・根拠。5文字未満は `RULE_CONFIG_REQUIRED`
+- `ruleRiskRegime`: `RISK_ON / NORMAL / RISK_OFF`
+- `maxPositionWeight`: REDUCE判定に使う最大個別銘柄比率
+- `maxSectorWeight`: REDUCE判定に使う最大セクター比率
+- `maxPositionBuyWeight`: BUY判定に使う個別銘柄比率上限
+- `maxSectorBuyWeight`: BUY判定に使うセクター比率上限
+- `priceMaxAgeDays / financialMaxAgeDays / fxMaxAgeDays`: STALE_DATA 判定日数
+
+判定優先順位は以下です。
+
+1. INVALID_DATA
+2. UNVERIFIED_DATA
+3. WEAK_EVIDENCE
+4. MULTIPLE_EVIDENCE_VALUES
+5. MISMATCHED_EVIDENCE
+6. PROFILE_DATA_REQUIRED
+7. RULE_CONFIG_REQUIRED
+8. STALE_DATA
+9. NO_DATA
+10. SELL / REDUCE / BUY / HOLD / WATCH
+
+ルール設定が未確認・不正な場合、売買判定は停止します。
