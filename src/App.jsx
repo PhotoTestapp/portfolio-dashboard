@@ -340,6 +340,20 @@ const ruleProfileOptions = [
 ]
 const allowedRuleProfiles = ruleProfileOptions.map((option) => option.value)
 
+
+const coverageFieldLabels = {
+  shares: '保有数', averagePrice: '取得単価', currentPrice: '現在価格', annualDividend: '年間配当',
+  payoutRatio: '配当性向', operatingCashFlowYoY: '営業CF前年比', revenueYoY: '売上前年比', epsYoY: 'EPS前年比', equityRatio: '自己資本比率', debtToEquity: '有利子負債倍率', dividendCut: '減配有無',
+  priceUpdatedAt: '価格更新日', financialUpdatedAt: '財務更新日', fxUpdatedAt: 'USD/JPY更新日',
+  sourceName: '取得元名', sourceUrl: '根拠URL', fiscalPeriod: '対象決算期', dataType: 'データ種別', confirmedAt: '根拠確認日', sourcePage: '根拠ページ', sourceQuote: '引用文', selectedEvidenceValue: '採用証跡値', sourceMetricName: '参照指標名', sourceUnit: '単位', evidenceMemo: '証跡補足', ruleProfile: '判定プロファイル',
+  bankCapitalRatio: '銀行自己資本比率', bankNplRatio: '不良債権比率', bankCreditCostRatio: '与信費用率', bankNetInterestMargin: '純金利マージン',
+  reitLtv: 'REIT LTV', reitOccupancyRate: 'REIT 稼働率', reitNavRatio: 'NAV倍率', reitFfoYoY: 'FFO前年比',
+  utilityCapexToSales: '設備投資/売上', utilityFuelCostYoY: '燃料費前年比', cyclicalMarketIndexYoY: '市況指数前年比', inventoryYoY: '在庫前年比', capacityUtilization: '設備稼働率',
+  growthFcfYoY: 'FCF前年比', operatingMargin: '営業利益率', rdToSales: 'R&D/売上', pipelineProgress: 'パイプライン進捗率', financialAumYoY: '運用資産前年比', financialCreditCostRatio: '金融与信費用率',
+  decisionHistory: '判定履歴', actionTracking: '実行記録', outcomeEvaluation: '結果評価',
+}
+const getCoverageFieldLabel = (field) => coverageFieldLabels[field] || validationRules[field]?.label || field
+
 const profileMetricDefinitions = {
   BANK: [
     { field: 'bankCapitalRatio', label: '銀行自己資本比率(%)', placeholder: '例: 10.5' },
@@ -1309,6 +1323,80 @@ const calculateDataCompleteness = ({ stocks, holdings, decisionHistory, auditLog
     auditLogCount,
     stockCount: stocks.length,
     holdingRecordCount: Object.keys(holdings || {}).length,
+  }
+}
+
+
+const buildCoverageDiagnostics = ({ stocks, decisionHistory, auditLog, checklistEntries, integritySummary }) => {
+  const baseSections = [
+    { key: 'position', label: '保有・価格', fields: ['shares', 'averagePrice', 'currentPrice', 'annualDividend', 'priceUpdatedAt'] },
+    { key: 'financial', label: '財務', fields: ['payoutRatio', 'operatingCashFlowYoY', 'revenueYoY', 'epsYoY', 'equityRatio', 'debtToEquity', 'dividendCut', 'financialUpdatedAt'] },
+    { key: 'evidence', label: '根拠・証跡', fields: ['sourceName', 'sourceUrl', 'fiscalPeriod', 'dataType', 'confirmedAt', 'sourcePage', 'sourceQuote', 'sourceMetricName', 'sourceUnit'] },
+    { key: 'rule', label: '判定プロファイル', fields: ['ruleProfile'] },
+  ]
+  const sectionTotals = Object.fromEntries(baseSections.map((section) => [section.key, { ...section, total: 0, filled: 0, missing: 0, rate: 0 }]))
+  sectionTotals.profileMetric = { key: 'profileMetric', label: '業種別専用指標', total: 0, filled: 0, missing: 0, rate: 0 }
+  sectionTotals.historyOutcome = { key: 'historyOutcome', label: '履歴・実行・結果', total: 0, filled: 0, missing: 0, rate: 0 }
+
+  const blockers = []
+  const stockRows = stocks.map((stock) => {
+    let total = 0
+    let filled = 0
+    const missingFields = []
+    const addFields = (sectionKey, fields) => {
+      for (const field of fields) {
+        total += 1
+        sectionTotals[sectionKey].total += 1
+        const value = field === 'fxUpdatedAt' ? stock.fxUpdatedAt : stock[field]
+        if (isFilled(value)) {
+          filled += 1
+          sectionTotals[sectionKey].filled += 1
+        } else {
+          missingFields.push(field)
+          sectionTotals[sectionKey].missing += 1
+        }
+      }
+    }
+    for (const section of baseSections) addFields(section.key, section.fields)
+    addFields('profileMetric', getProfileMetrics(stock.ruleProfile).map((metric) => metric.field))
+
+    const histories = decisionHistory.filter((item) => item.code === stock.code)
+    const latest = histories[0]
+    sectionTotals.historyOutcome.total += 3
+    total += 3
+    if (histories.length > 0) { filled += 1; sectionTotals.historyOutcome.filled += 1 } else { missingFields.push('decisionHistory'); sectionTotals.historyOutcome.missing += 1 }
+    if (latest?.actionTaken || latest?.actionType) { filled += 1; sectionTotals.historyOutcome.filled += 1 } else { missingFields.push('actionTracking'); sectionTotals.historyOutcome.missing += 1 }
+    if (latest?.outcomeDate) { filled += 1; sectionTotals.historyOutcome.filled += 1 } else { missingFields.push('outcomeEvaluation'); sectionTotals.historyOutcome.missing += 1 }
+
+    const coverageScore = total > 0 ? Math.round((filled / total) * 100) : 0
+    const blockingDecision = ['INVALID_DATA', 'UNVERIFIED_DATA', 'WEAK_EVIDENCE', 'MULTIPLE_EVIDENCE_VALUES', 'MISMATCHED_EVIDENCE', 'PROFILE_DATA_REQUIRED', 'RULE_CONFIG_REQUIRED', 'STALE_DATA', 'NO_DATA'].includes(stock.decisionResult?.decision)
+    const impact = blockingDecision || coverageScore < 60 ? 'HIGH' : coverageScore < 80 ? 'MEDIUM' : 'LOW'
+    const priority = (blockingDecision ? 100 : 0) + (100 - coverageScore) + (stock.riskPriorityScore || 0) / 10
+    for (const field of missingFields.slice(0, 10)) {
+      blockers.push({ code: stock.code, name: stock.name, fieldName: field, fieldLabel: getCoverageFieldLabel(field), decision: stock.decisionResult?.decision || '', coverageScore, impact, priority })
+    }
+    return { code: stock.code, name: stock.name, market: stock.market, group: stock.group, ruleProfile: stock.ruleProfile, decision: stock.decisionResult?.decision || '', riskPriorityScore: stock.riskPriorityScore || 0, coverageScore, filled, total, missingCount: missingFields.length, missingFields, impact, priority }
+  }).sort((a, b) => a.coverageScore - b.coverageScore || b.riskPriorityScore - a.riskPriorityScore)
+
+  for (const section of Object.values(sectionTotals)) section.rate = section.total > 0 ? (section.filled / section.total) * 100 : 100
+  const totalFields = Object.values(sectionTotals).reduce((sum, section) => sum + section.total, 0)
+  const filledFields = Object.values(sectionTotals).reduce((sum, section) => sum + section.filled, 0)
+  const coverageScore = totalFields > 0 ? Math.round((filledFields / totalFields) * 100) : 0
+  const evaluatedHistory = decisionHistory.filter((item) => item.outcomeDate).length
+  return {
+    coverageScore,
+    totalFields,
+    filledFields,
+    missingFields: totalFields - filledFields,
+    sectionTotals: Object.values(sectionTotals),
+    stockRows,
+    blockers: blockers.sort((a, b) => b.priority - a.priority).slice(0, 100),
+    highImpactBlockers: blockers.filter((item) => item.impact === 'HIGH').length,
+    outcomeCoverageRate: decisionHistory.length > 0 ? (evaluatedHistory / decisionHistory.length) * 100 : 0,
+    actionCoverageRate: decisionHistory.length > 0 ? (decisionHistory.filter((item) => item.actionTaken || item.actionType).length / decisionHistory.length) * 100 : 0,
+    checklistCoverageRate: checklistEntries.length > 0 ? (checklistEntries.filter((item) => item.status === 'DONE').length / checklistEntries.length) * 100 : 0,
+    auditCoverageRate: auditLog.length > 0 ? 100 : 0,
+    integrityCompletenessScore: integritySummary?.dataCompletenessScore ?? 0,
   }
 }
 
@@ -2736,6 +2824,8 @@ export default function PortfolioManagementDashboard() {
     }
   }, [checklistEntries])
 
+  const coverageDiagnostics = useMemo(() => buildCoverageDiagnostics({ stocks: enrichedStocks, decisionHistory, auditLog, checklistEntries, integritySummary }), [enrichedStocks, decisionHistory, auditLog, checklistEntries, integritySummary])
+
 
   const riskWeightConfigErrors = useMemo(() => validateRiskWeightConfig(riskWeightConfig), [riskWeightConfig])
 
@@ -3657,6 +3747,15 @@ export default function PortfolioManagementDashboard() {
     downloadTextFile(`﻿${csv}`, 'portfolio-risk-weight-diagnostics.csv', 'text/csv;charset=utf-8;')
   }
 
+  const exportCoverageDiagnosticsCsv = () => {
+    const header = ['type', 'code', 'name', 'market', 'group', 'ruleProfile', 'decision', 'coverageScore', 'missingCount', 'fieldName', 'fieldLabel', 'impact']
+    const stockRows = coverageDiagnostics.stockRows.map((item) => ['stock', item.code, item.name, item.market, item.group, item.ruleProfile, item.decision, item.coverageScore, item.missingCount, item.missingFields.map(getCoverageFieldLabel).join(' / '), '', item.impact])
+    const blockerRows = coverageDiagnostics.blockers.map((item) => ['blocker', item.code, item.name, '', '', '', item.decision, item.coverageScore, '', item.fieldName, item.fieldLabel, item.impact])
+    const sectionRows = coverageDiagnostics.sectionTotals.map((item) => ['section', '', item.label, '', '', '', '', item.rate.toFixed(2), item.missing, item.key, `${item.filled}/${item.total}`, item.rate < 80 ? 'HIGH' : 'LOW'])
+    const csv = [header, ...sectionRows, ...stockRows, ...blockerRows].map((row) => row.map((cell) => `"${String(cell ?? '').replaceAll('"', '""')}"`).join(',')).join('\n')
+    downloadTextFile(`﻿${csv}`, 'portfolio-coverage-diagnostics.csv', 'text/csv;charset=utf-8;')
+  }
+
   const applyRiskWeightRecommendations = () => {
     const actionable = riskWeightDiagnostics.filter((item) => ['INCREASE', 'DECREASE'].includes(item.recommendation) && item.evaluatedCount >= 3 && item.suggestedWeight !== item.currentWeight)
     if (actionable.length === 0) {
@@ -3790,6 +3889,7 @@ export default function PortfolioManagementDashboard() {
                 <button type="button" onClick={exportAuditLogCsv} className="rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50">監査ログCSV出力</button>
                 <button type="button" onClick={exportOperationalReportMarkdown} className="rounded-2xl border border-blue-300 bg-blue-50 px-4 py-3 text-sm font-semibold text-blue-700 hover:bg-blue-100">運用レポートMD</button>
                 <button type="button" onClick={exportOperationalReportJson} className="rounded-2xl border border-blue-300 bg-white px-4 py-3 text-sm font-semibold text-blue-700 hover:bg-blue-50">運用レポートJSON</button>
+                <button type="button" onClick={exportCoverageDiagnosticsCsv} className="rounded-2xl border border-teal-300 bg-teal-50 px-4 py-3 text-sm font-semibold text-teal-700 hover:bg-teal-100">不足診断CSV</button>
                 <button type="button" onClick={clearAuditLog} className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700 hover:bg-rose-100">監査ログ削除</button>
                 <button type="button" onClick={clearDecisionHistory} className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700 hover:bg-rose-100">履歴削除</button>
                 <button type="button" onClick={clearHoldings} className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700 hover:bg-red-100">入力削除</button>
@@ -3857,6 +3957,54 @@ export default function PortfolioManagementDashboard() {
             <MetricCard label="最終JSON保存" value={integrityMeta.lastBackupAt ? integrityMeta.lastBackupAt.slice(0, 10) : '未保存'} subLabel={integrityMeta.backupIntegrityHash || 'hashなし'} tone="sky" />
             <MetricCard label="最終JSON復元" value={integrityMeta.lastRestoreAt ? integrityMeta.lastRestoreAt.slice(0, 10) : '未復元'} subLabel={integrityMeta.restoreSourceHash || 'hashなし'} tone={integrityMeta.restoreStatus === 'RESTORED_WITH_WARNINGS' ? 'amber' : 'slate'} />
           </div>
+
+          <div className="bg-white/80 backdrop-blur-3xl border border-teal-100 rounded-[32px] shadow-[0_20px_60px_rgba(15,23,42,0.08)] p-6">
+            <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <h2 className="text-2xl font-bold text-slate-900">データ入力・評価カバレッジ診断</h2>
+                <p className="text-xs font-semibold text-slate-500">判定・診断・バックテストに必要な入力不足を機械的に抽出。次に埋めるべき項目を固定。</p>
+              </div>
+              <button type="button" onClick={exportCoverageDiagnosticsCsv} className="rounded-2xl border border-teal-300 bg-teal-50 px-4 py-2 text-xs font-bold text-teal-700 hover:bg-teal-100">不足診断CSV</button>
+            </div>
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
+              <MetricCard label="総合カバレッジ" value={formatPercent(coverageDiagnostics.coverageScore)} subLabel={`${coverageDiagnostics.filledFields}/${coverageDiagnostics.totalFields}項目`} tone={coverageDiagnostics.coverageScore >= 90 ? 'emerald' : coverageDiagnostics.coverageScore >= 75 ? 'amber' : 'red'} />
+              <MetricCard label="不足項目" value={coverageDiagnostics.missingFields} subLabel={`HIGH ${coverageDiagnostics.highImpactBlockers}件`} tone={coverageDiagnostics.highImpactBlockers > 0 ? 'red' : 'emerald'} />
+              <MetricCard label="結果評価率" value={formatPercent(coverageDiagnostics.outcomeCoverageRate)} subLabel="decisionHistory中" tone={coverageDiagnostics.outcomeCoverageRate >= 70 ? 'emerald' : 'amber'} />
+              <MetricCard label="実行記録率" value={formatPercent(coverageDiagnostics.actionCoverageRate)} subLabel="actionTracking" tone={coverageDiagnostics.actionCoverageRate >= 70 ? 'emerald' : 'amber'} />
+              <MetricCard label="チェック完了率" value={formatPercent(coverageDiagnostics.checklistCoverageRate)} subLabel="運用タスク" tone={coverageDiagnostics.checklistCoverageRate >= 80 ? 'emerald' : 'amber'} />
+              <MetricCard label="完全性スコア" value={coverageDiagnostics.integrityCompletenessScore} subLabel="既存integrity" tone={coverageDiagnostics.integrityCompletenessScore >= 90 ? 'emerald' : 'amber'} />
+            </div>
+            <div className="mt-5 grid gap-4 xl:grid-cols-2">
+              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                <div className="mb-3 text-sm font-black text-slate-900">区分別カバレッジ</div>
+                <div className="space-y-2">
+                  {coverageDiagnostics.sectionTotals.map((section) => (
+                    <div key={section.key} className="grid grid-cols-[120px_1fr_72px] items-center gap-3 text-xs">
+                      <div className="font-bold text-slate-700">{section.label}</div>
+                      <div className="h-2 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-slate-900" style={{ width: `${Math.min(100, Math.max(0, section.rate))}%` }} /></div>
+                      <div className="text-right font-black text-slate-900">{formatPercent(section.rate)}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                <div className="mb-3 text-sm font-black text-slate-900">次に埋めるべき項目</div>
+                <div className="space-y-2">
+                  {coverageDiagnostics.blockers.slice(0, 10).map((item) => (
+                    <div key={`${item.code}-${item.fieldName}`} className="flex items-center justify-between gap-3 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-xs">
+                      <div>
+                        <div className="font-bold text-slate-900">{item.code} {item.name}</div>
+                        <div className="font-semibold text-slate-500">{item.fieldLabel} / 判定 {item.decision}</div>
+                      </div>
+                      <span className={`rounded-full border px-2 py-1 text-[11px] font-black ${item.impact === 'HIGH' ? 'border-red-200 bg-red-50 text-red-700' : item.impact === 'MEDIUM' ? 'border-amber-200 bg-amber-50 text-amber-700' : 'border-slate-200 bg-white text-slate-600'}`}>{item.impact}</span>
+                    </div>
+                  ))}
+                  {coverageDiagnostics.blockers.length === 0 && <div className="text-xs font-semibold text-emerald-700">主要不足項目なし</div>}
+                </div>
+              </div>
+            </div>
+          </div>
+
 
           <div className="bg-white/80 backdrop-blur-3xl border border-blue-100 rounded-[32px] shadow-[0_20px_60px_rgba(15,23,42,0.08)] p-6">
             <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
