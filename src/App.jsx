@@ -19,6 +19,8 @@ const RISK_SCORE_VERSION = '2026.05-risk-weight-v1'
 const IMPORT_VALIDATION_REPORT_KEY = 'portfolio-dashboard-import-validation-report-v1'
 const SAFE_MODE_KEY = 'portfolio-dashboard-safe-mode-v1'
 const SAFE_MODE_VERSION = '2026.05-safe-mode-v1'
+const GUIDED_WORKFLOW_KEY = 'portfolio-dashboard-guided-workflow-v1'
+const GUIDED_WORKFLOW_VERSION = '2026.05-guided-workflow-v1'
 
 const DEFAULT_RISK_WEIGHT_CONFIG = {
   riskScoreVersion: RISK_SCORE_VERSION,
@@ -188,6 +190,74 @@ const cadenceLabels = {
   MONTHLY: '月次',
   QUARTERLY: '四半期',
 }
+
+
+const guidedWorkflowDefinitions = [
+  {
+    id: 'daily-workflow',
+    cadence: 'DAILY',
+    label: '日次ワークフロー',
+    objective: '価格・為替・停止判定・SELL/REDUCEを順番に確認し、日次リスク処理の抜けを防ぐ。',
+    steps: [
+      { id: 'daily-risk-rank', label: 'リスク優先度上位を確認', checklistId: 'daily-blocking-decisions', description: 'riskPriorityScore上位、停止判定、SELL/REDUCEを上から確認。', output: '確認対象を上位から処理' },
+      { id: 'daily-price-fx', label: '価格・USD/JPY更新', checklistId: 'daily-price-fx', description: '現在価格、価格更新日、USD/JPY、USD/JPY更新日を更新。', output: 'STALE_DATA削減' },
+      { id: 'daily-blocking', label: '停止判定を処理', checklistId: 'daily-blocking-decisions', description: 'INVALID / UNVERIFIED / WEAK / MULTIPLE / MISMATCH / PROFILE / RULE / STALE / NO_DATAを処理。', output: '通常判定可能銘柄を増やす' },
+      { id: 'daily-sell-reduce', label: 'SELL / REDUCEを確認', checklistId: 'daily-sell-reduce', description: 'SELL / REDUCE銘柄の実行記録または未実行理由を入力。', output: '未実行SELL/REDUCEを減らす' },
+    ],
+  },
+  {
+    id: 'weekly-workflow',
+    cadence: 'WEEKLY',
+    label: '週次ワークフロー',
+    objective: '証跡、監査ログ、実行・結果未入力、バックアップを週次で固定する。',
+    steps: [
+      { id: 'weekly-evidence', label: '証跡・監査ログ確認', checklistId: 'weekly-evidence-audit', description: 'HIGH影響変更、証跡不足、証跡不一致、監査ログを確認。', output: '根拠不明・転記ミスを減らす' },
+      { id: 'weekly-action-outcome', label: '実行・結果未入力を確認', checklistId: 'weekly-action-outcome', description: 'actionTrackingとoutcomeEvaluationの未入力を確認。', output: '遵守率・成績評価の欠損を減らす' },
+      { id: 'weekly-coverage', label: 'カバレッジと不足入力候補を出力', checklistId: 'weekly-action-outcome', description: 'カバレッジ診断、不足入力CSV、貼付用TSVを出力して不足を処理。', output: '次に埋めるデータを固定' },
+      { id: 'weekly-backup', label: 'JSONバックアップ保存', checklistId: 'weekly-backup', description: 'JSON保存を実行し、backupIntegrityHashとlastBackupAtを更新。', output: '復元可能状態を確保' },
+    ],
+  },
+  {
+    id: 'monthly-workflow',
+    cadence: 'MONTHLY',
+    label: '月次ワークフロー',
+    objective: '判定履歴・運用レポート・ルール設定・リスク重みを月次で固定する。',
+    steps: [
+      { id: 'monthly-history', label: '現在判定を履歴保存', checklistId: 'monthly-decision-history', description: '現在判定をdecisionHistoryへ保存し、バックテスト用スナップショットを残す。', output: '判定結果を後で検証可能にする' },
+      { id: 'monthly-report', label: '運用レポート出力', checklistId: 'monthly-operation-report', description: 'MD / JSONレポートを出力し、資産・判定・遵守・成績・完全性を固定。', output: '月次レビュー資料を生成' },
+      { id: 'monthly-rule-review', label: 'ルール設定確認', checklistId: 'monthly-rule-review', description: 'ruleVersion、ruleReviewedAt、riskRegime、閾値、変更理由を確認。', output: 'RULE_CONFIG_REQUIREDを防ぐ' },
+      { id: 'monthly-risk-weight', label: 'リスク重み診断を確認', checklistId: 'monthly-rule-review', description: 'riskWeightDiagnosticsのINCREASE / DECREASE / NEED_DATAを確認。', output: '重み改善候補を確認' },
+    ],
+  },
+  {
+    id: 'quarterly-workflow',
+    cadence: 'QUARTERLY',
+    label: '四半期ワークフロー',
+    objective: '決算更新、業種別専用指標、証跡、ルール妥当性を四半期で棚卸しする。',
+    steps: [
+      { id: 'quarterly-financial', label: '財務データ更新', checklistId: 'quarterly-financial-refresh', description: '配当性向、営業CF、売上、EPS、自己資本比率、有利子負債倍率を更新。', output: '財務STALE_DATAを解消' },
+      { id: 'quarterly-profile', label: '業種別専用指標更新', checklistId: 'quarterly-profile-metrics', description: 'BANK / REIT / UTILITY / CYCLICAL / GROWTH_TECH等の専用指標を更新。', output: 'PROFILE_DATA_REQUIREDを解消' },
+      { id: 'quarterly-evidence', label: '根拠・証跡を再確認', checklistId: 'quarterly-financial-refresh', description: 'sourceUrl、sourceQuote、selectedEvidenceValue、sourcePageを最新資料で確認。', output: 'UNVERIFIED / WEAK / MISMATCHを削減' },
+      { id: 'quarterly-rule', label: 'ルール・重みを棚卸し', checklistId: 'monthly-rule-review', description: 'ruleConfigとriskWeightConfigの変更理由、成績診断、NEED_DATAを確認。', output: '次期ルール改善候補を固定' },
+    ],
+  },
+]
+
+const sanitizeGuidedWorkflow = (value) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { version: GUIDED_WORKFLOW_VERSION, activeWorkflowId: '', startedAt: '', completedSteps: {}, lastCompletedAt: '' }
+  }
+  const completedSteps = value.completedSteps && typeof value.completedSteps === 'object' && !Array.isArray(value.completedSteps) ? value.completedSteps : {}
+  return {
+    version: String(value.version || GUIDED_WORKFLOW_VERSION),
+    activeWorkflowId: String(value.activeWorkflowId || ''),
+    startedAt: String(value.startedAt || ''),
+    completedSteps: Object.fromEntries(Object.entries(completedSteps).map(([key, val]) => [key, String(val || '')])),
+    lastCompletedAt: String(value.lastCompletedAt || ''),
+  }
+}
+
+const getGuidedStepKey = (workflowId, stepId) => `${workflowId}:${stepId}`
 
 const sanitizeChecklist = (value) => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
@@ -2529,6 +2599,15 @@ export default function PortfolioManagementDashboard() {
     }
   })
 
+  const [guidedWorkflow, setGuidedWorkflow] = useState(() => {
+    try {
+      const saved = window.localStorage.getItem(GUIDED_WORKFLOW_KEY)
+      return saved ? sanitizeGuidedWorkflow(JSON.parse(saved)) : sanitizeGuidedWorkflow(null)
+    } catch {
+      return sanitizeGuidedWorkflow(null)
+    }
+  })
+
   const [riskWeightConfig, setRiskWeightConfig] = useState(() => {
     try {
       const saved = window.localStorage.getItem(RISK_WEIGHT_KEY)
@@ -2592,6 +2671,10 @@ export default function PortfolioManagementDashboard() {
   useEffect(() => {
     window.localStorage.setItem(CHECKLIST_KEY, JSON.stringify(operationalChecklist))
   }, [operationalChecklist])
+
+  useEffect(() => {
+    window.localStorage.setItem(GUIDED_WORKFLOW_KEY, JSON.stringify(guidedWorkflow))
+  }, [guidedWorkflow])
 
   useEffect(() => {
     window.localStorage.setItem(RISK_WEIGHT_KEY, JSON.stringify(riskWeightConfig))
@@ -2959,6 +3042,41 @@ export default function PortfolioManagementDashboard() {
       byCadence,
     }
   }, [checklistEntries])
+
+  const guidedWorkflowStats = useMemo(() => guidedWorkflowDefinitions.map((workflow) => {
+    const doneCount = workflow.steps.filter((step) => guidedWorkflow.completedSteps?.[getGuidedStepKey(workflow.id, step.id)]).length
+    const checklistDoneCount = workflow.steps.filter((step) => {
+      const linked = checklistEntries.find((item) => item.id === step.checklistId)
+      return linked?.status === 'DONE'
+    }).length
+    return {
+      ...workflow,
+      doneCount,
+      checklistDoneCount,
+      totalSteps: workflow.steps.length,
+      completionRate: workflow.steps.length > 0 ? (doneCount / workflow.steps.length) * 100 : 0,
+    }
+  }), [guidedWorkflow, checklistEntries])
+
+  const activeGuidedWorkflow = useMemo(() => {
+    return guidedWorkflowDefinitions.find((workflow) => workflow.id === guidedWorkflow.activeWorkflowId) || guidedWorkflowDefinitions[0]
+  }, [guidedWorkflow.activeWorkflowId])
+
+  const activeGuidedWorkflowSteps = useMemo(() => {
+    return activeGuidedWorkflow.steps.map((step, index) => {
+      const key = getGuidedStepKey(activeGuidedWorkflow.id, step.id)
+      const linkedChecklist = checklistEntries.find((item) => item.id === step.checklistId)
+      return {
+        ...step,
+        index: index + 1,
+        completedAt: guidedWorkflow.completedSteps?.[key] || '',
+        key,
+        checklistStatus: linkedChecklist?.status || 'OVERDUE',
+        checklistStatusLabel: linkedChecklist?.label || '未実施',
+        checklistAgeDays: linkedChecklist?.ageDays ?? null,
+      }
+    })
+  }, [activeGuidedWorkflow, guidedWorkflow.completedSteps, checklistEntries])
 
   const coverageDiagnostics = useMemo(() => buildCoverageDiagnostics({ stocks: enrichedStocks, decisionHistory, auditLog, checklistEntries, integritySummary }), [enrichedStocks, decisionHistory, auditLog, checklistEntries, integritySummary])
 
@@ -4074,6 +4192,97 @@ export default function PortfolioManagementDashboard() {
 
 
 
+  const startGuidedWorkflow = (workflowId) => {
+    const definition = guidedWorkflowDefinitions.find((item) => item.id === workflowId)
+    if (!definition) return
+    const now = new Date().toISOString()
+    setGuidedWorkflow((current) => ({
+      ...current,
+      version: GUIDED_WORKFLOW_VERSION,
+      activeWorkflowId: workflowId,
+      startedAt: now,
+    }))
+    appendAuditEntries(buildAuditEntry({
+      code: 'SYSTEM',
+      name: 'ガイドワークフロー',
+      fieldName: 'guidedWorkflow.activeWorkflowId',
+      previousValue: guidedWorkflow.activeWorkflowId || '',
+      newValue: workflowId,
+      changeSource: 'manual',
+      decisionBefore: 'WORKFLOW_SELECT',
+      decisionAfter: definition.label,
+    }))
+    setImportMessage(`${definition.label}を開始しました。上から順に処理してください。`)
+  }
+
+  const completeGuidedStep = (workflowId, stepId) => {
+    const workflow = guidedWorkflowDefinitions.find((item) => item.id === workflowId)
+    const step = workflow?.steps.find((item) => item.id === stepId)
+    if (!workflow || !step) return
+    const now = new Date().toISOString()
+    const key = getGuidedStepKey(workflowId, stepId)
+    setGuidedWorkflow((current) => ({
+      ...current,
+      version: GUIDED_WORKFLOW_VERSION,
+      activeWorkflowId: workflowId,
+      completedSteps: {
+        ...(current.completedSteps || {}),
+        [key]: now,
+      },
+      lastCompletedAt: now,
+    }))
+    if (step.checklistId) {
+      setOperationalChecklist((current) => ({
+        ...current,
+        [step.checklistId]: {
+          ...(current[step.checklistId] || {}),
+          completedAt: now,
+        },
+      }))
+    }
+    appendAuditEntries(buildAuditEntry({
+      code: 'SYSTEM',
+      name: 'ガイドワークフロー',
+      fieldName: `guidedWorkflow.${workflowId}.${stepId}`,
+      previousValue: guidedWorkflow.completedSteps?.[key] || '',
+      newValue: now,
+      changeSource: 'manual',
+      decisionBefore: workflow.label,
+      decisionAfter: `DONE: ${step.label}`,
+    }))
+    setImportMessage(`${workflow.label}: ${step.label}を完了にしました。`)
+  }
+
+  const resetGuidedWorkflowProgress = () => {
+    if (!confirmDangerousAction('ガイドワークフロー進捗リセット', 'RESET')) return
+    const previous = JSON.stringify(guidedWorkflow.completedSteps || {})
+    setGuidedWorkflow((current) => ({ ...current, completedSteps: {}, lastCompletedAt: '' }))
+    appendAuditEntries(buildAuditEntry({
+      code: 'SYSTEM',
+      name: 'ガイドワークフロー',
+      fieldName: 'guidedWorkflow.completedSteps',
+      previousValue: previous,
+      newValue: '',
+      changeSource: 'manual',
+      decisionBefore: 'RESET_REQUESTED',
+      decisionAfter: 'RESET_DONE',
+    }))
+    setImportMessage('ガイドワークフロー進捗をリセットしました。')
+  }
+
+  const exportGuidedWorkflowCsv = () => {
+    const header = ['workflowId', 'workflowLabel', 'cadence', 'stepId', 'stepOrder', 'stepLabel', 'description', 'output', 'checklistId', 'completedAt', 'checklistStatus']
+    const rows = guidedWorkflowDefinitions.flatMap((workflow) => workflow.steps.map((step, index) => {
+      const key = getGuidedStepKey(workflow.id, step.id)
+      const checklist = checklistEntries.find((item) => item.id === step.checklistId)
+      return [workflow.id, workflow.label, workflow.cadence, step.id, index + 1, step.label, step.description, step.output, step.checklistId, guidedWorkflow.completedSteps?.[key] || '', checklist?.status || '']
+    }))
+    const csv = [header, ...rows].map((row) => row.map((cell) => `"${String(cell ?? '').replaceAll('"', '""')}"`).join(',')).join('\n')
+    downloadTextFile(`﻿${csv}`, 'portfolio-guided-workflows.csv', 'text/csv;charset=utf-8;')
+  }
+
+
+
   const exportRiskWeightConfigCsv = () => {
     const header = ['type', 'key', 'label', 'value', 'min', 'max', 'riskScoreVersion', 'riskWeightRegime', 'riskWeightReviewedAt', 'riskWeightChangeReason']
     const rows = [
@@ -4280,6 +4489,70 @@ export default function PortfolioManagementDashboard() {
             ) : (
               <button type="button" onClick={disableEditMode} className="rounded-2xl border border-emerald-300 bg-emerald-50 px-4 py-2 text-xs font-black text-emerald-700 hover:bg-emerald-100">閲覧モードへ戻す</button>
             )}
+          </div>
+        </div>
+      </div>
+      <div className="relative z-10 px-6 pt-6">
+        <div className="mx-auto max-w-7xl rounded-[32px] border border-white/70 bg-white/85 p-6 shadow-[0_20px_60px_rgba(15,23,42,0.08)] backdrop-blur-3xl">
+          <div className="mb-4 flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+            <div>
+              <h2 className="text-2xl font-black text-slate-900">ガイドワークフロー</h2>
+              <p className="mt-1 text-sm font-semibold text-slate-500">日次・週次・月次・四半期の作業を順番固定。人間が作業順を選ばない構造にする。</p>
+              <p className="mt-1 text-xs font-bold text-red-600">閲覧モードでは進捗更新不可。実施記録を残す場合は編集モードに切替。</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" onClick={exportGuidedWorkflowCsv} className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-xs font-black text-slate-700 hover:bg-slate-50">ワークフローCSV</button>
+              <button type="button" onClick={resetGuidedWorkflowProgress} className="rounded-2xl border border-red-300 bg-red-50 px-4 py-2 text-xs font-black text-red-700 hover:bg-red-100">進捗リセット</button>
+            </div>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-4">
+            {guidedWorkflowStats.map((workflow) => (
+              <button
+                key={workflow.id}
+                type="button"
+                onClick={() => startGuidedWorkflow(workflow.id)}
+                className={`rounded-2xl border p-4 text-left transition ${guidedWorkflow.activeWorkflowId === workflow.id ? 'border-sky-300 bg-sky-50 shadow-sm' : 'border-slate-200 bg-slate-50 hover:bg-white'}`}
+              >
+                <div className="text-sm font-black text-slate-900">{workflow.label}</div>
+                <div className="mt-1 text-xs font-bold text-slate-500">{cadenceLabels[workflow.cadence] || workflow.cadence}</div>
+                <div className="mt-3 h-2 rounded-full bg-slate-200">
+                  <div className="h-2 rounded-full bg-sky-500" style={{ width: `${Math.min(100, Math.max(0, workflow.completionRate))}%` }} />
+                </div>
+                <div className="mt-2 text-xs font-semibold text-slate-600">進捗 {workflow.doneCount}/{workflow.totalSteps} / checklist {workflow.checklistDoneCount}/{workflow.totalSteps}</div>
+              </button>
+            ))}
+          </div>
+
+          <div className="mt-5 rounded-3xl border border-slate-200 bg-slate-50 p-4">
+            <div className="mb-3 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+              <div>
+                <h3 className="text-lg font-black text-slate-900">{activeGuidedWorkflow.label}</h3>
+                <p className="text-xs font-semibold text-slate-500">{activeGuidedWorkflow.objective}</p>
+              </div>
+              <div className="text-xs font-bold text-slate-500">開始: {guidedWorkflow.startedAt ? guidedWorkflow.startedAt.slice(0, 19).replace('T', ' ') : '未開始'} / 最終完了: {guidedWorkflow.lastCompletedAt ? guidedWorkflow.lastCompletedAt.slice(0, 19).replace('T', ' ') : 'なし'}</div>
+            </div>
+            <div className="grid gap-3 xl:grid-cols-4">
+              {activeGuidedWorkflowSteps.map((step) => (
+                <div key={step.id} className={`rounded-2xl border p-4 ${step.completedAt ? 'border-emerald-200 bg-emerald-50' : 'border-slate-200 bg-white'}`}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-[11px] font-black text-slate-400">STEP {step.index}</div>
+                      <div className="mt-1 text-sm font-black text-slate-900">{step.label}</div>
+                    </div>
+                    <span className={`rounded-full px-2 py-1 text-[10px] font-black ${step.completedAt ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>{step.completedAt ? 'DONE' : 'OPEN'}</span>
+                  </div>
+                  <p className="mt-2 text-xs font-semibold leading-relaxed text-slate-600">{step.description}</p>
+                  <div className="mt-3 rounded-xl border border-slate-200 bg-white/70 p-2 text-[11px] font-semibold text-slate-600">
+                    <div>出力: {step.output}</div>
+                    <div>連動タスク: {step.checklistId}</div>
+                    <div>チェック状態: {step.checklistStatus} {step.checklistAgeDays !== null ? `/ ${step.checklistAgeDays}日` : ''}</div>
+                    {step.completedAt && <div>完了: {step.completedAt.slice(0, 19).replace('T', ' ')}</div>}
+                  </div>
+                  <button type="button" onClick={() => completeGuidedStep(activeGuidedWorkflow.id, step.id)} className="mt-3 w-full rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-black text-emerald-700 hover:bg-emerald-100">このステップを完了</button>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       </div>
