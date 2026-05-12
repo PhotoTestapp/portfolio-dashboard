@@ -17,6 +17,8 @@ const APP_SCHEMA_VERSION = '2026.05-integrity-v1'
 const RISK_WEIGHT_KEY = 'portfolio-dashboard-risk-weight-config-v1'
 const RISK_SCORE_VERSION = '2026.05-risk-weight-v1'
 const IMPORT_VALIDATION_REPORT_KEY = 'portfolio-dashboard-import-validation-report-v1'
+const SAFE_MODE_KEY = 'portfolio-dashboard-safe-mode-v1'
+const SAFE_MODE_VERSION = '2026.05-safe-mode-v1'
 
 const DEFAULT_RISK_WEIGHT_CONFIG = {
   riskScoreVersion: RISK_SCORE_VERSION,
@@ -118,6 +120,25 @@ const sanitizeRiskWeightConfig = (value) => {
 }
 
 const getRiskWeight = (config, key) => toConfigNumber(config?.weights?.[key], DEFAULT_RISK_WEIGHT_CONFIG.weights[key] || 0)
+
+const readSafeModeSetting = () => {
+  try {
+    const saved = window.localStorage.getItem(SAFE_MODE_KEY)
+    return saved ? JSON.parse(saved) : { mode: 'READ_ONLY', changedAt: '', version: SAFE_MODE_VERSION }
+  } catch {
+    return { mode: 'READ_ONLY', changedAt: '', version: SAFE_MODE_VERSION }
+  }
+}
+
+const sanitizeSafeModeSetting = (value) => {
+  const mode = value?.mode === 'EDIT' ? 'EDIT' : 'READ_ONLY'
+  return {
+    mode,
+    changedAt: String(value?.changedAt || ''),
+    version: String(value?.version || SAFE_MODE_VERSION),
+  }
+}
+
 const getRiskLevelThreshold = (config, key) => toConfigNumber(config?.levels?.[key], DEFAULT_RISK_WEIGHT_CONFIG.levels[key] || 0)
 
 const validateRiskWeightConfig = (config) => {
@@ -2517,6 +2538,37 @@ export default function PortfolioManagementDashboard() {
     }
   })
 
+  const [safeMode, setSafeMode] = useState(() => sanitizeSafeModeSetting(readSafeModeSetting()))
+  const isReadOnlyMode = safeMode.mode !== 'EDIT'
+
+  useEffect(() => {
+    window.localStorage.setItem(SAFE_MODE_KEY, JSON.stringify(safeMode))
+  }, [safeMode])
+
+  const enableEditMode = () => {
+    const phrase = window.prompt('編集モードに切り替えるには EDIT と入力してください。')
+    if (phrase !== 'EDIT') {
+      setImportMessage('編集モード切替を中止しました。')
+      return
+    }
+    const now = new Date().toISOString()
+    setSafeMode({ mode: 'EDIT', changedAt: now, version: SAFE_MODE_VERSION })
+    setImportMessage('編集モードに切り替えました。入力・取込・復元・削除が可能です。')
+    appendAuditEntries(buildAuditEntry({ code: 'SYSTEM', name: '安全モード', fieldName: 'safeMode', previousValue: 'READ_ONLY', newValue: 'EDIT', changeSource: 'manual', decisionBefore: 'LOCKED', decisionAfter: 'UNLOCKED' }))
+  }
+
+  const disableEditMode = () => {
+    const now = new Date().toISOString()
+    setSafeMode({ mode: 'READ_ONLY', changedAt: now, version: SAFE_MODE_VERSION })
+    setImportMessage('閲覧モードに戻しました。変更操作をロックしています。')
+    appendAuditEntries(buildAuditEntry({ code: 'SYSTEM', name: '安全モード', fieldName: 'safeMode', previousValue: 'EDIT', newValue: 'READ_ONLY', changeSource: 'manual', decisionBefore: 'UNLOCKED', decisionAfter: 'LOCKED' }))
+  }
+
+  const confirmDangerousAction = (label, requiredText = 'DELETE') => {
+    const phrase = window.prompt(`${label}を実行するには ${requiredText} と入力してください。`)
+    return phrase === requiredText
+  }
+
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(holdings))
   }, [holdings])
@@ -2935,6 +2987,7 @@ export default function PortfolioManagementDashboard() {
   }
 
   const resetRiskWeightConfig = () => {
+    if (!confirmDangerousAction('リスク重み設定の初期化', 'RESET')) return
     setRiskWeightConfig(sanitizeRiskWeightConfig(DEFAULT_RISK_WEIGHT_CONFIG))
     appendAuditEntries(buildAuditEntry({ code: 'SYSTEM', name: 'リスク重み設定', fieldName: 'riskWeightConfig', previousValue: 'custom', newValue: 'default', changeSource: 'rule_config', ruleVersion: RISK_SCORE_VERSION }))
   }
@@ -4185,21 +4238,21 @@ export default function PortfolioManagementDashboard() {
 
 
   const clearAuditLog = () => {
-    if (window.confirm('監査ログをすべて削除します。実行しますか？')) {
+    if (confirmDangerousAction('監査ログ全削除')) {
       setAuditLog([])
       setImportMessage('監査ログを削除しました。')
     }
   }
 
   const clearDecisionHistory = () => {
-    if (window.confirm('判定履歴をすべて削除します。実行しますか？')) {
+    if (confirmDangerousAction('判定履歴全削除')) {
       setDecisionHistory([])
       setImportMessage('判定履歴を削除しました。')
     }
   }
 
   const clearHoldings = () => {
-    if (window.confirm('入力した保有データをすべて削除します。実行しますか？')) {
+    if (confirmDangerousAction('入力データ全削除')) {
       const entries = Object.entries(holdings).flatMap(([code, holding]) => {
         const stock = stockByCode.get(code)
         return Object.entries(holding || {}).filter(([, value]) => String(value ?? '') !== '').map(([fieldName, value]) => buildAuditEntry({ code, name: stock?.name || '', fieldName, previousValue: value, newValue: '', changeSource: 'manual', decisionBefore: stock?.decisionResult?.decision || '', decisionAfter: 'CLEARED' }))
@@ -4210,8 +4263,26 @@ export default function PortfolioManagementDashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-sky-100 via-white to-slate-100 text-slate-900 overflow-hidden relative">
+    <div className={`min-h-screen bg-gradient-to-b from-sky-100 via-white to-slate-100 text-slate-900 overflow-hidden relative ${isReadOnlyMode ? 'safe-readonly' : 'safe-editing'}`}>
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.95),rgba(191,219,254,0.4),transparent_70%)]" />
+      <div className="safe-allow sticky top-0 z-50 border-b border-slate-200 bg-white/95 px-6 py-3 shadow-sm backdrop-blur">
+        <div className="mx-auto flex max-w-7xl flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div>
+            <div className="text-sm font-black text-slate-900">安全操作モード: {isReadOnlyMode ? '閲覧モード' : '編集モード'}</div>
+            <div className="mt-1 text-xs font-semibold text-slate-500">
+              {isReadOnlyMode ? '入力・取込・復元・削除・ルール変更をロック中。編集する場合は明示解除が必要。' : '編集可能状態。作業後は閲覧モードへ戻す。危険操作は追加確認あり。'}
+              {safeMode.changedAt ? ` / 切替: ${safeMode.changedAt.slice(0, 19).replace('T', ' ')}` : ''}
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {isReadOnlyMode ? (
+              <button type="button" onClick={enableEditMode} className="rounded-2xl border border-red-300 bg-red-50 px-4 py-2 text-xs font-black text-red-700 hover:bg-red-100">編集モード解除</button>
+            ) : (
+              <button type="button" onClick={disableEditMode} className="rounded-2xl border border-emerald-300 bg-emerald-50 px-4 py-2 text-xs font-black text-emerald-700 hover:bg-emerald-100">閲覧モードへ戻す</button>
+            )}
+          </div>
+        </div>
+      </div>
       <div className="relative z-10 p-6">
         <div className="max-w-7xl mx-auto space-y-10">
           <div className="bg-white border border-slate-200 rounded-3xl shadow-sm p-8">
