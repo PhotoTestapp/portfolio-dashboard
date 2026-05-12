@@ -14,7 +14,8 @@
     "react": "latest",
     "react-dom": "latest",
     "tailwindcss": "latest",
-    "@tailwindcss/vite": "latest"
+    "@tailwindcss/vite": "latest",
+    "@supabase/supabase-js": "^2.49.1"
   },
   "devDependencies": {}
 }

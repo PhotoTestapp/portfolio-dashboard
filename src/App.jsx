@@ -6207,6 +6207,50 @@ export default function PortfolioManagementDashboard() {
             </div>
           ))}
 
+
+
+          <div className="bg-white/70 backdrop-blur-3xl border border-white/60 rounded-[36px] shadow-[0_20px_60px_rgba(15,23,42,0.10)] p-8">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between mb-6">
+              <div>
+                <h2 className="text-2xl font-bold text-slate-900">Supabase最小移行キット</h2>
+                <p className="text-sm text-slate-500 mt-2">localStorage依存・認証なし・複数端末同期なしを同時に潰すための最小バックエンド移行ファイルを同梱。</p>
+              </div>
+              <div className="rounded-2xl border border-indigo-200 bg-indigo-50 px-4 py-2 text-xs font-black text-indigo-700">backend-minimum-v1</div>
+            </div>
+            <div className="grid md:grid-cols-3 gap-4">
+              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                <div className="text-sm font-black text-slate-800">追加ファイル</div>
+                <ul className="mt-3 space-y-1 text-xs text-slate-600">
+                  <li>・supabase/schema.sql</li>
+                  <li>・supabase/README.md</li>
+                  <li>・.env.example</li>
+                  <li>・src/services/supabaseSync.js</li>
+                  <li>・src/config/backendMigrationSpec.js</li>
+                </ul>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                <div className="text-sm font-black text-slate-800">解消対象</div>
+                <ul className="mt-3 space-y-1 text-xs text-slate-600">
+                  <li>・localStorage単独保存</li>
+                  <li>・認証なし</li>
+                  <li>・複数端末同期なし</li>
+                  <li>・revision管理なし</li>
+                  <li>・監査ログのクラウド保存なし</li>
+                </ul>
+              </div>
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                <div className="text-sm font-black text-amber-800">まだ未実装</div>
+                <ul className="mt-3 space-y-1 text-xs text-slate-700">
+                  <li>・Supabaseプロジェクト作成</li>
+                  <li>・SQL適用</li>
+                  <li>・環境変数設定</li>
+                  <li>・UIへのログイン/同期ボタン接続</li>
+                  <li>・証券API/有料API連携</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+
           <div className="bg-white/70 backdrop-blur-3xl border border-white/60 rounded-[36px] shadow-[0_20px_60px_rgba(15,23,42,0.10)] p-8">
             <h2 className="text-2xl font-bold text-slate-900 mb-6">管理上の重大警告</h2>
             <div className="grid md:grid-cols-2 gap-6">
