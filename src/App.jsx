@@ -4556,6 +4556,245 @@ export default function PortfolioManagementDashboard() {
     downloadTextFile(tsv, 'portfolio-bulk-paste-template.tsv', 'text/tab-separated-values;charset=utf-8;')
   }
 
+
+
+  const buildDataUpdatePackRows = (packType) => {
+    const today = new Date().toISOString().slice(0, 10)
+    const blockingDecisions = ['INVALID_DATA', 'UNVERIFIED_DATA', 'WEAK_EVIDENCE', 'MULTIPLE_EVIDENCE_VALUES', 'MISMATCHED_EVIDENCE', 'PROFILE_DATA_REQUIRED', 'RULE_CONFIG_REQUIRED', 'STALE_DATA', 'NO_DATA']
+    const makeRow = ({ pack, cadence, code, name, market, group, ruleProfile, fieldName, currentValue = '', decision = '', riskPriorityScore = 0, riskPriorityRank = '', riskPriorityLevel = '', coverageScore = '', dueReason = '', requiredReason = '', inputHint = '', sourceRequired = '', workflowStep = '', importedValue = '' }) => {
+      const hint = getMissingDataTemplateHint(fieldName)
+      return {
+        pack,
+        cadence,
+        code,
+        name,
+        market,
+        group,
+        ruleProfile,
+        missingField: fieldName,
+        missingFieldLabel: getCoverageFieldLabel(fieldName),
+        currentValue,
+        importedValue,
+        requiredReason: requiredReason || hint.reason,
+        inputHint: inputHint || hint.hint,
+        sourceRequired: sourceRequired || hint.sourceRequired,
+        currentDecision: decision,
+        riskPriorityScore,
+        riskPriorityRank,
+        riskPriorityLevel,
+        coverageScore,
+        dueReason,
+        workflowStep,
+        generatedAt: today,
+      }
+    }
+    const rows = []
+    const addStockField = (stock, fieldName, pack, cadence, dueReason, workflowStep, extra = {}) => rows.push(makeRow({
+      pack,
+      cadence,
+      code: stock.code,
+      name: stock.name,
+      market: stock.market,
+      group: stock.group,
+      ruleProfile: stock.ruleProfile,
+      fieldName,
+      currentValue: holdings[stock.code]?.[fieldName] ?? '',
+      decision: stock.decisionResult?.decision || '',
+      riskPriorityScore: stock.riskPriorityScore || 0,
+      riskPriorityRank: stock.riskPriorityRank || '',
+      riskPriorityLevel: stock.riskPriorityLevel || '',
+      coverageScore: stock.coverageScore ?? '',
+      dueReason,
+      workflowStep,
+      ...extra,
+    }))
+
+    const riskyStocks = [...riskPriorityList]
+      .filter((stock) => stock.riskPriorityLevel !== 'LOW' || blockingDecisions.includes(stock.decisionResult?.decision))
+      .slice(0, 80)
+
+    if (packType === 'daily' || packType === 'all') {
+      for (const stock of riskyStocks) {
+        const decision = stock.decisionResult?.decision || ''
+        const reasons = []
+        if (stock.isPriceStale || decision === 'STALE_DATA') reasons.push('価格期限切れ')
+        if (['SELL', 'REDUCE'].includes(decision)) reasons.push(`${decision}判定`)
+        if (blockingDecisions.includes(decision)) reasons.push(`停止判定:${decision}`)
+        if ((stock.riskPriorityScore || 0) >= getRiskLevelThreshold(riskWeightConfig, 'high')) reasons.push('リスク優先度HIGH以上')
+        const reason = reasons.join(' / ') || '日次価格確認対象'
+        addStockField(stock, 'currentPrice', 'daily-update-pack', 'daily', reason, '価格・為替更新')
+        addStockField(stock, 'priceUpdatedAt', 'daily-update-pack', 'daily', reason, '価格・為替更新', { importedValue: today })
+      }
+      const usdStocks = enrichedStocks.filter((stock) => stock.currency === 'USD')
+      if (usdStocks.length > 0) {
+        rows.push(makeRow({
+          pack: 'daily-update-pack',
+          cadence: 'daily',
+          code: 'FX',
+          name: 'USD/JPY',
+          market: 'GLOBAL',
+          group: 'FX',
+          ruleProfile: 'GLOBAL',
+          fieldName: 'fxUpdatedAt',
+          currentValue: fxUpdatedAtInput,
+          importedValue: today,
+          decision: portfolioSummary.decisionCounts?.STALE_DATA ? 'STALE_DATA' : '',
+          dueReason: '米国株の円換算・評価額・比率計算に必要',
+          workflowStep: '価格・為替更新',
+          requiredReason: '米国株円換算の鮮度判定に必要',
+          inputHint: 'YYYY-MM-DD。USD/JPYを更新した日付。',
+          sourceRequired: '為替確認日',
+        }))
+      }
+    }
+
+    if (packType === 'weekly' || packType === 'all') {
+      const evidenceFields = ['sourceName', 'sourceUrl', 'fiscalPeriod', 'dataType', 'confirmedAt', 'sourcePage', 'sourceQuote', 'selectedEvidenceValue', 'sourceMetricName', 'sourceUnit']
+      const evidenceStocks = enrichedStocks.filter((stock) => ['UNVERIFIED_DATA', 'WEAK_EVIDENCE', 'MULTIPLE_EVIDENCE_VALUES', 'MISMATCHED_EVIDENCE'].includes(stock.decisionResult?.decision) || (stock.evidenceResult?.status && stock.evidenceResult.status !== 'MATCH'))
+      for (const stock of evidenceStocks.slice(0, 100)) {
+        for (const field of evidenceFields) {
+          if (!holdings[stock.code]?.[field] || ['sourceQuote', 'selectedEvidenceValue', 'sourceMetricName', 'sourceUnit'].includes(field)) {
+            addStockField(stock, field, 'weekly-evidence-pack', 'weekly', `証跡系停止または照合未完了: ${stock.decisionResult?.decision || ''}`, '証跡・監査ログ確認')
+          }
+        }
+      }
+      const actionTargets = decisionHistory.filter((item) => ['SELL', 'REDUCE', 'BUY'].includes(item.decision) && (!item.actionTaken || item.complianceStatus === 'NOT_EXECUTED')).slice(0, 100)
+      for (const item of actionTargets) {
+        const stock = enrichedStocks.find((target) => target.code === item.code) || item
+        ;['actionTaken', 'actionType', 'actionDate', 'actionPrice', 'actionShares', 'actionReason'].forEach((field) => rows.push(makeRow({
+          pack: 'weekly-evidence-pack',
+          cadence: 'weekly',
+          code: item.code,
+          name: item.name,
+          market: stock.market || '',
+          group: stock.group || '',
+          ruleProfile: stock.ruleProfile || item.ruleProfile || '',
+          fieldName: field,
+          currentValue: item[field] ?? '',
+          decision: item.decision,
+          riskPriorityScore: stock.riskPriorityScore || 0,
+          riskPriorityRank: stock.riskPriorityRank || '',
+          riskPriorityLevel: stock.riskPriorityLevel || '',
+          dueReason: 'SELL/REDUCE/BUY判定の未実行・未記録を解消',
+          workflowStep: '実行/結果未入力確認',
+          requiredReason: '判定遵守率・未実行検出に必要',
+          inputHint: '売買履歴に基づき入力。未実行なら理由をactionReasonへ記録。',
+          sourceRequired: '売買履歴 / 証券口座',
+        })))
+      }
+      const outcomeTargets = decisionHistory.filter((item) => ['BUY', 'SELL', 'REDUCE', 'HOLD', 'WATCH'].includes(item.decision) && !item.decisionAccuracy).slice(0, 100)
+      for (const item of outcomeTargets) {
+        const stock = enrichedStocks.find((target) => target.code === item.code) || item
+        ;['outcomeDate', 'outcomePrice', 'outcomeDividend'].forEach((field) => rows.push(makeRow({
+          pack: 'weekly-evidence-pack',
+          cadence: 'weekly',
+          code: item.code,
+          name: item.name,
+          market: stock.market || '',
+          group: stock.group || '',
+          ruleProfile: stock.ruleProfile || item.ruleProfile || '',
+          fieldName: field,
+          currentValue: item[field] ?? '',
+          decision: item.decision,
+          riskPriorityScore: stock.riskPriorityScore || 0,
+          riskPriorityRank: stock.riskPriorityRank || '',
+          riskPriorityLevel: stock.riskPriorityLevel || '',
+          dueReason: '判定成績評価に必要な結果データが未入力',
+          workflowStep: '実行/結果未入力確認',
+          requiredReason: '判定成績・重み診断に必要',
+          inputHint: '結果確認時点の価格・受取配当・確認日を入力。',
+          sourceRequired: '市場価格 / 配当履歴',
+        })))
+      }
+    }
+
+    if (packType === 'monthly' || packType === 'all') {
+      const monthlyTasks = [
+        ['decisionHistory', '現在判定を履歴保存し、ルール成績評価の母集団を増やす', '判定履歴保存'],
+        ['operationReport', '月次運用レポートMD/JSONを出力する', '運用レポート出力'],
+        ['ruleVersion', 'ルールバージョン・確認日・変更理由を確認する', 'ルール設定確認'],
+        ['riskScoreVersion', 'リスク重み診断を確認し、必要なら推奨重みを適用する', 'リスク重み診断'],
+        ['lastBackupAt', 'JSONバックアップを保存し、完全性ハッシュを更新する', 'JSONバックアップ保存'],
+      ]
+      for (const [field, reason, step] of monthlyTasks) {
+        rows.push(makeRow({
+          pack: 'monthly-operation-pack',
+          cadence: 'monthly',
+          code: 'SYSTEM',
+          name: '月次運用',
+          market: 'SYSTEM',
+          group: 'OPERATIONS',
+          ruleProfile: 'SYSTEM',
+          fieldName: field,
+          currentValue: field === 'lastBackupAt' ? integrityMeta.lastBackupAt || '' : field === 'riskScoreVersion' ? riskWeightConfig.riskScoreVersion || '' : '',
+          decision: '',
+          dueReason: reason,
+          workflowStep: step,
+          requiredReason: reason,
+          inputHint: '画面上の該当ボタンまたは設定欄で処理する。',
+          sourceRequired: 'アプリ操作 / 運用記録',
+        }))
+      }
+    }
+
+    if (packType === 'quarterly' || packType === 'all') {
+      const coreFinancialFields = ['annualDividend', 'payoutRatio', 'operatingCashFlowYoY', 'revenueYoY', 'epsYoY', 'equityRatio', 'debtToEquity', 'dividendCut', 'financialUpdatedAt', 'sourceName', 'sourceUrl', 'fiscalPeriod', 'dataType', 'confirmedAt', 'sourcePage', 'sourceQuote', 'selectedEvidenceValue', 'sourceMetricName', 'sourceUnit']
+      const quarterlyTargets = enrichedStocks
+        .filter((stock) => stock.shares > 0 || blockingDecisions.includes(stock.decisionResult?.decision) || (stock.riskPriorityScore || 0) > 0)
+        .sort((a, b) => (b.riskPriorityScore || 0) - (a.riskPriorityScore || 0))
+        .slice(0, 120)
+      for (const stock of quarterlyTargets) {
+        for (const field of coreFinancialFields) {
+          addStockField(stock, field, 'quarterly-financial-pack', 'quarterly', '四半期財務・証跡棚卸し対象', '財務データ更新')
+        }
+        const profileFields = (profileMetricDefinitions[stock.ruleProfile] || []).map((item) => item.field)
+        for (const field of profileFields) {
+          addStockField(stock, field, 'quarterly-financial-pack', 'quarterly', `${stock.ruleProfile}専用指標の四半期更新`, '業種別専用指標更新')
+        }
+      }
+    }
+
+    const seen = new Set()
+    return rows.filter((row) => {
+      const key = `${row.pack}|${row.code}|${row.missingField}|${row.workflowStep}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    }).sort((a, b) => {
+      const levelOrder = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1 }
+      return (levelOrder[b.riskPriorityLevel] || 0) - (levelOrder[a.riskPriorityLevel] || 0) || Number(b.riskPriorityScore || 0) - Number(a.riskPriorityScore || 0)
+    })
+  }
+
+  const exportDataUpdatePackCsv = (packType, filename) => {
+    const header = ['pack', 'cadence', 'code', 'name', 'market', 'group', 'ruleProfile', 'missingField', 'missingFieldLabel', 'currentValue', 'importedValue', 'requiredReason', 'inputHint', 'sourceRequired', 'currentDecision', 'riskPriorityScore', 'riskPriorityRank', 'riskPriorityLevel', 'coverageScore', 'dueReason', 'workflowStep', 'generatedAt']
+    const rows = buildDataUpdatePackRows(packType).map((item) => header.map((key) => item[key] ?? ''))
+    const csv = [header, ...rows].map((row) => row.map((cell) => `"${String(cell ?? '').replaceAll('"', '""')}"`).join(',')).join('\n')
+    downloadTextFile(`﻿${csv}`, filename, 'text/csv;charset=utf-8;')
+  }
+
+  const exportDailyUpdatePackCsv = () => exportDataUpdatePackCsv('daily', 'portfolio-daily-update-pack.csv')
+  const exportWeeklyEvidencePackCsv = () => exportDataUpdatePackCsv('weekly', 'portfolio-weekly-evidence-pack.csv')
+  const exportMonthlyOperationPackCsv = () => exportDataUpdatePackCsv('monthly', 'portfolio-monthly-operation-pack.csv')
+  const exportQuarterlyFinancialPackCsv = () => exportDataUpdatePackCsv('quarterly', 'portfolio-quarterly-financial-pack.csv')
+  const exportAllDataUpdatePackCsv = () => exportDataUpdatePackCsv('all', 'portfolio-all-data-update-pack.csv')
+
+  const updatePackSummary = useMemo(() => {
+    const packs = [
+      { key: 'daily', label: '日次更新パック', rows: buildDataUpdatePackRows('daily') },
+      { key: 'weekly', label: '週次証跡パック', rows: buildDataUpdatePackRows('weekly') },
+      { key: 'monthly', label: '月次運用パック', rows: buildDataUpdatePackRows('monthly') },
+      { key: 'quarterly', label: '四半期財務パック', rows: buildDataUpdatePackRows('quarterly') },
+    ]
+    return packs.map((pack) => ({
+      ...pack,
+      rowCount: pack.rows.length,
+      highCount: pack.rows.filter((row) => ['CRITICAL', 'HIGH'].includes(row.riskPriorityLevel)).length,
+      stockCount: new Set(pack.rows.filter((row) => !['SYSTEM', 'FX'].includes(row.code)).map((row) => row.code)).size,
+      topReason: pack.rows[0]?.dueReason || '対象なし',
+    }))
+  }, [enrichedStocks, riskPriorityList, coverageDiagnostics, decisionHistory, holdings, settings, riskWeightConfig, integrityMeta])
+
   const applyRiskWeightRecommendations = () => {
     const actionable = riskWeightDiagnostics.filter((item) => ['INCREASE', 'DECREASE'].includes(item.recommendation) && item.evaluatedCount >= 3 && item.suggestedWeight !== item.currentWeight)
     if (actionable.length === 0) {
@@ -4742,6 +4981,37 @@ export default function PortfolioManagementDashboard() {
           </div>
         </div>
       </div>
+      <div className="relative z-10 px-6 pt-6">
+        <div className="mx-auto max-w-7xl rounded-[32px] border border-orange-100 bg-white/85 p-6 shadow-[0_20px_60px_rgba(15,23,42,0.08)] backdrop-blur-3xl">
+          <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <h2 className="text-2xl font-black text-slate-900">データ更新パック</h2>
+              <p className="mt-1 text-sm font-semibold text-slate-500">未解決の「自動取得できないデータ」を、日次・週次・月次・四半期の作業CSVに分解して出力します。</p>
+              <p className="mt-1 text-xs font-bold text-orange-700">出力CSVは作業指示用です。値を埋めた後は一括貼り付けまたは不足入力CSV取込で反映してください。</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" onClick={exportDailyUpdatePackCsv} className="rounded-2xl border border-orange-300 bg-orange-50 px-4 py-2 text-xs font-black text-orange-700 hover:bg-orange-100">日次更新Pack</button>
+              <button type="button" onClick={exportWeeklyEvidencePackCsv} className="rounded-2xl border border-orange-300 bg-white px-4 py-2 text-xs font-black text-orange-700 hover:bg-orange-50">週次証跡Pack</button>
+              <button type="button" onClick={exportMonthlyOperationPackCsv} className="rounded-2xl border border-orange-300 bg-white px-4 py-2 text-xs font-black text-orange-700 hover:bg-orange-50">月次運用Pack</button>
+              <button type="button" onClick={exportQuarterlyFinancialPackCsv} className="rounded-2xl border border-orange-300 bg-white px-4 py-2 text-xs font-black text-orange-700 hover:bg-orange-50">四半期財務Pack</button>
+              <button type="button" onClick={exportAllDataUpdatePackCsv} className="rounded-2xl border border-orange-300 bg-orange-600 px-4 py-2 text-xs font-black text-white hover:bg-orange-700">全更新Pack</button>
+            </div>
+          </div>
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            {updatePackSummary.map((pack) => (
+              <div key={pack.key} className="rounded-2xl border border-orange-100 bg-orange-50/70 p-4">
+                <div className="text-sm font-black text-slate-900">{pack.label}</div>
+                <div className="mt-2 grid grid-cols-3 gap-2 text-center text-xs">
+                  <div className="rounded-xl bg-white p-2"><div className="text-lg font-black text-slate-900">{pack.rowCount}</div><div className="font-bold text-slate-500">行数</div></div>
+                  <div className="rounded-xl bg-white p-2"><div className="text-lg font-black text-slate-900">{pack.stockCount}</div><div className="font-bold text-slate-500">銘柄</div></div>
+                  <div className="rounded-xl bg-white p-2"><div className="text-lg font-black text-red-700">{pack.highCount}</div><div className="font-bold text-slate-500">HIGH</div></div>
+                </div>
+                <div className="mt-3 rounded-xl border border-orange-100 bg-white p-3 text-xs font-semibold leading-relaxed text-slate-600">最上位理由: {pack.topReason}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
       <div className="relative z-10 p-6">
         <div className="max-w-7xl mx-auto space-y-10">
           <div className="bg-white border border-slate-200 rounded-3xl shadow-sm p-8">
@@ -4820,6 +5090,11 @@ export default function PortfolioManagementDashboard() {
                 <button type="button" onClick={exportMissingDataTemplateCsv} className="rounded-2xl border border-teal-300 bg-white px-4 py-3 text-sm font-semibold text-teal-700 hover:bg-teal-50">不足入力テンプレートCSV</button>
                 <button type="button" onClick={exportBulkInputSuggestionsCsv} className="rounded-2xl border border-cyan-300 bg-cyan-50 px-4 py-3 text-sm font-semibold text-cyan-700 hover:bg-cyan-100">入力候補CSV</button>
                 <button type="button" onClick={exportBulkPasteTemplateTsv} className="rounded-2xl border border-cyan-300 bg-white px-4 py-3 text-sm font-semibold text-cyan-700 hover:bg-cyan-50">貼付用TSV</button>
+                <button type="button" onClick={exportDailyUpdatePackCsv} className="rounded-2xl border border-orange-300 bg-orange-50 px-4 py-3 text-sm font-semibold text-orange-700 hover:bg-orange-100">日次更新Pack</button>
+                <button type="button" onClick={exportWeeklyEvidencePackCsv} className="rounded-2xl border border-orange-300 bg-white px-4 py-3 text-sm font-semibold text-orange-700 hover:bg-orange-50">週次証跡Pack</button>
+                <button type="button" onClick={exportMonthlyOperationPackCsv} className="rounded-2xl border border-orange-300 bg-white px-4 py-3 text-sm font-semibold text-orange-700 hover:bg-orange-50">月次運用Pack</button>
+                <button type="button" onClick={exportQuarterlyFinancialPackCsv} className="rounded-2xl border border-orange-300 bg-white px-4 py-3 text-sm font-semibold text-orange-700 hover:bg-orange-50">四半期財務Pack</button>
+                <button type="button" onClick={exportAllDataUpdatePackCsv} className="rounded-2xl border border-orange-300 bg-orange-600 px-4 py-3 text-sm font-semibold text-white hover:bg-orange-700">全更新Pack</button>
                 <label className="cursor-pointer rounded-2xl border border-teal-300 bg-teal-50 px-4 py-3 text-center text-sm font-semibold text-teal-700 hover:bg-teal-100">
                   不足入力CSV取込
                   <input type="file" accept=".csv,text/csv" onChange={importMissingDataTemplateCsv} className="hidden" />
