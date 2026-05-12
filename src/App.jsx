@@ -2358,6 +2358,7 @@ function ProfileMetricInputs({ profile, holding, fieldErrors, updateField }) {
 function StockCard({ stock, holding, onHoldingChange, decisionHistory = [] }) {
   const result = stock.decisionResult || { decision: 'NO_DATA', severity: 'HIGH', reasons: ['判定不可'] }
   const fieldErrors = { ...(stock.validationFieldErrors || {}), ...(stock.verificationFieldErrors || {}), ...(stock.evidenceFieldErrors || {}) }
+  const [inputLevel, setInputLevel] = useState('LEVEL1')
 
   const updateField = (field, value) => {
     const previousValue = holding[field] ?? ''
@@ -2397,6 +2398,27 @@ function StockCard({ stock, holding, onHoldingChange, decisionHistory = [] }) {
 
       <div className="mt-3 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-800">判定プロファイル: {stock.ruleProfile}（未指定時は業務内容・分類から自動付与）</div>
 
+      <div className="mt-3 rounded-2xl border border-slate-200 bg-white p-3">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div>
+            <div className="text-xs font-bold text-slate-800">入力モード</div>
+            <div className="mt-1 text-[11px] font-semibold text-slate-500">通常はLevel 1だけ入力。必要銘柄だけLevel 2 / 3を開く。</div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {[['LEVEL1', 'Level 1 最小'], ['LEVEL2', 'Level 2 財務'], ['LEVEL3', 'Level 3 証跡']].map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setInputLevel(value)}
+                className={`rounded-xl border px-3 py-2 text-[11px] font-bold transition ${inputLevel === value ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
       <div className="mt-4 grid grid-cols-2 gap-2 md:grid-cols-4">
         <InputCell label="保有数" value={holding.shares} onChange={(value) => updateField('shares', value)} placeholder="例: 100" error={fieldErrors.shares} />
         <InputCell label={`取得単価(${stock.currency})`} value={holding.averagePrice} onChange={(value) => updateField('averagePrice', value)} placeholder="例: 3200" error={fieldErrors.averagePrice} />
@@ -2404,6 +2426,8 @@ function StockCard({ stock, holding, onHoldingChange, decisionHistory = [] }) {
         <InputCell label={`年間配当(${stock.currency})`} value={holding.annualDividend} onChange={(value) => updateField('annualDividend', value)} placeholder="例: 194" error={fieldErrors.annualDividend} />
       </div>
 
+      {inputLevel !== 'LEVEL1' && (
+        <>
       <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4">
         <InputCell label="配当性向(%)" value={holding.payoutRatio} onChange={(value) => updateField('payoutRatio', value)} placeholder="例: 65" error={fieldErrors.payoutRatio} />
         <InputCell label="営業CF前年比(%)" value={holding.operatingCashFlowYoY} onChange={(value) => updateField('operatingCashFlowYoY', value)} placeholder="例: -12" signed error={fieldErrors.operatingCashFlowYoY} />
@@ -2424,7 +2448,10 @@ function StockCard({ stock, holding, onHoldingChange, decisionHistory = [] }) {
         <DateInputCell label="価格更新日" value={holding.priceUpdatedAt} onChange={(value) => updateField('priceUpdatedAt', value)} error={fieldErrors.priceUpdatedAt} />
         <DateInputCell label="財務更新日" value={holding.financialUpdatedAt} onChange={(value) => updateField('financialUpdatedAt', value)} error={fieldErrors.financialUpdatedAt} />
       </div>
+        </>
+      )}
 
+      {inputLevel === 'LEVEL3' && (
       <div className="mt-3 rounded-2xl border border-purple-100 bg-purple-50/60 p-3">
         <div className="mb-2 text-xs font-bold text-purple-800">データ根拠</div>
         <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
@@ -2448,6 +2475,7 @@ function StockCard({ stock, holding, onHoldingChange, decisionHistory = [] }) {
           </div>
         </div>
       </div>
+      )}
 
       <div className="mt-3 grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
         <div className="rounded-xl bg-white border border-slate-200 p-3">
