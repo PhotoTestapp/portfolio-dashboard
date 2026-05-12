@@ -19,6 +19,17 @@ export async function getCurrentUser() {
   return { user: data?.user ?? null, error }
 }
 
+export async function getCurrentSession() {
+  if (!supabase) return { session: null, error: new Error('Supabase is not configured') }
+  const { data, error } = await supabase.auth.getSession()
+  return { session: data?.session ?? null, error }
+}
+
+export function onAuthStateChange(callback) {
+  if (!supabase) return { data: { subscription: { unsubscribe() {} } } }
+  return supabase.auth.onAuthStateChange(callback)
+}
+
 export async function signInWithEmail(email) {
   if (!supabase) return { error: new Error('Supabase is not configured') }
   return supabase.auth.signInWithOtp({ email })

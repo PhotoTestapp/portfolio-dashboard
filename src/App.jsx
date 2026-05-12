@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ACTUAL_HOLDING_COUNT, businessMap, buyMap, sections, sellMap, thesisMap } from './data/portfolioData'
 import { conditionDefinitions, conditionLabels, normalizeStocks } from './utils/stockUtils'
+import { appendAuditLog as appendRemoteAuditLog, getCurrentSession, isSupabaseConfigured, loadPortfolioState, onAuthStateChange, savePortfolioState, signInWithEmail, signOut } from './services/supabaseSync'
 
 const marketOrder = ['日本株', '米国株']
 const STORAGE_KEY = 'portfolio-dashboard-holdings-v1'
@@ -2678,10 +2679,45 @@ export default function PortfolioManagementDashboard() {
 
   const [safeMode, setSafeMode] = useState(() => sanitizeSafeModeSetting(readSafeModeSetting()))
   const isReadOnlyMode = safeMode.mode !== 'EDIT'
+  const [cloudEmail, setCloudEmail] = useState('')
+  const [cloudUser, setCloudUser] = useState(null)
+  const [cloudStatus, setCloudStatus] = useState(isSupabaseConfigured ? 'Supabase未ログイン' : 'Supabase未設定')
+  const [cloudLoading, setCloudLoading] = useState(false)
+  const [cloudMeta, setCloudMeta] = useState({ revision: '', stateHash: '', updatedAt: '', loadedAt: '', savedAt: '' })
 
   useEffect(() => {
     window.localStorage.setItem(SAFE_MODE_KEY, JSON.stringify(safeMode))
   }, [safeMode])
+
+  useEffect(() => {
+    let active = true
+    if (!isSupabaseConfigured) {
+      setCloudStatus('Supabase未設定: .envに VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY が必要です。')
+      return undefined
+    }
+
+    getCurrentSession().then(({ session, error }) => {
+      if (!active) return
+      if (error) {
+        setCloudStatus(`Supabaseセッション確認失敗: ${error.message}`)
+        return
+      }
+      const user = session?.user ?? null
+      setCloudUser(user)
+      setCloudStatus(user ? `ログイン中: ${user.email || user.id}` : 'Supabase未ログイン')
+    })
+
+    const { data } = onAuthStateChange((_event, session) => {
+      const user = session?.user ?? null
+      setCloudUser(user)
+      setCloudStatus(user ? `ログイン中: ${user.email || user.id}` : 'Supabase未ログイン')
+    })
+
+    return () => {
+      active = false
+      data?.subscription?.unsubscribe?.()
+    }
+  }, [])
 
   const enableEditMode = () => {
     const phrase = window.prompt('編集モードに切り替えるには EDIT と入力してください。')
@@ -3187,6 +3223,121 @@ export default function PortfolioManagementDashboard() {
     const normalized = sanitizeAuditLog(Array.isArray(entries) ? entries : [entries])
     if (normalized.length === 0) return
     setAuditLog((current) => [...normalized, ...current].slice(0, 20000))
+  }
+
+  const buildCloudStatePayload = () => ({
+    app: 'portfolio-dashboard',
+    appSchemaVersion: APP_SCHEMA_VERSION,
+    exportedAt: new Date().toISOString(),
+    settings,
+    usdJpy: usdJpyInput,
+    fxUpdatedAt: fxUpdatedAtInput,
+    holdings,
+    decisionHistory,
+    auditLog,
+    integrityMeta,
+    operationalChecklist,
+    guidedWorkflow,
+    riskWeightConfig,
+    importValidationReport,
+    safeMode: { mode: 'READ_ONLY', changedAt: safeMode.changedAt, version: safeMode.version },
+  })
+
+  const handleCloudSignIn = async () => {
+    if (!isSupabaseConfigured) {
+      setCloudStatus('Supabase未設定: .envに VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY を設定してください。')
+      return
+    }
+    const email = String(cloudEmail || '').trim()
+    if (!email || !email.includes('@')) {
+      setCloudStatus('メールアドレスが不正です。')
+      return
+    }
+    setCloudLoading(true)
+    const { error } = await signInWithEmail(email)
+    setCloudLoading(false)
+    if (error) {
+      setCloudStatus(`ログインメール送信失敗: ${error.message}`)
+      return
+    }
+    setCloudStatus('ログイン用メールを送信しました。メール内リンクで認証してください。')
+  }
+
+  const handleCloudSignOut = async () => {
+    setCloudLoading(true)
+    const { error } = await signOut()
+    setCloudLoading(false)
+    if (error) {
+      setCloudStatus(`ログアウト失敗: ${error.message}`)
+      return
+    }
+    setCloudUser(null)
+    setCloudStatus('ログアウトしました。')
+  }
+
+  const handleCloudSave = async () => {
+    if (isReadOnlyMode) {
+      setCloudStatus('閲覧モードではクラウド保存できません。EDITで編集モードにしてください。')
+      return
+    }
+    if (!cloudUser) {
+      setCloudStatus('未ログインのためクラウド保存できません。')
+      return
+    }
+    const state = buildCloudStatePayload()
+    const stateHash = buildIntegrityHash(state)
+    const revision = Date.now()
+    setCloudLoading(true)
+    const { data, error } = await savePortfolioState({ state, stateHash, revision })
+    if (!error) {
+      await appendRemoteAuditLog({ eventType: 'cloud_save', payload: { stateHash, revision }, revision })
+    }
+    setCloudLoading(false)
+    if (error) {
+      setCloudStatus(`クラウド保存失敗: ${error.message}`)
+      return
+    }
+    const savedAt = data?.updated_at || new Date().toISOString()
+    setCloudMeta({ revision: String(data?.revision ?? revision), stateHash: data?.state_hash || stateHash, updatedAt: data?.updated_at || '', loadedAt: cloudMeta.loadedAt || '', savedAt })
+    setCloudStatus(`クラウド保存完了: hash ${stateHash}`)
+    appendAuditEntries(buildAuditEntry({ code: 'SYSTEM', name: 'Supabase同期', fieldName: 'cloudSave', previousValue: '', newValue: stateHash, changeSource: 'manual', decisionBefore: '', decisionAfter: 'SAVED_TO_CLOUD' }))
+  }
+
+  const handleCloudLoad = async () => {
+    if (isReadOnlyMode) {
+      setCloudStatus('閲覧モードではクラウド復元できません。EDITで編集モードにしてください。')
+      return
+    }
+    if (!cloudUser) {
+      setCloudStatus('未ログインのためクラウド復元できません。')
+      return
+    }
+    if (!window.confirm('クラウド上のportfolio_stateでローカル状態を上書きします。続行しますか？')) return
+    setCloudLoading(true)
+    const { state: remoteRecord, error } = await loadPortfolioState()
+    setCloudLoading(false)
+    if (error) {
+      setCloudStatus(`クラウド復元失敗: ${error.message}`)
+      return
+    }
+    if (!remoteRecord?.state) {
+      setCloudStatus('クラウド側に保存済みデータがありません。')
+      return
+    }
+    const remoteState = remoteRecord.state
+    const loadedAt = new Date().toISOString()
+    setSettings(remoteState.settings || { usdJpy: String(remoteState.usdJpy || DEFAULT_USD_JPY), fxUpdatedAt: String(remoteState.fxUpdatedAt || '') })
+    setHoldings(remoteState.holdings && typeof remoteState.holdings === 'object' ? remoteState.holdings : {})
+    setDecisionHistory(sanitizeDecisionHistory(remoteState.decisionHistory || []))
+    setAuditLog(sanitizeAuditLog(remoteState.auditLog || []))
+    setIntegrityMeta(sanitizeIntegrityMeta(remoteState.integrityMeta || null))
+    setOperationalChecklist(sanitizeChecklist(remoteState.operationalChecklist || {}))
+    setGuidedWorkflow(sanitizeGuidedWorkflow(remoteState.guidedWorkflow || null))
+    setRiskWeightConfig(sanitizeRiskWeightConfig(remoteState.riskWeightConfig || DEFAULT_RISK_WEIGHT_CONFIG))
+    setImportValidationReport(remoteState.importValidationReport || null)
+    setCloudMeta({ revision: String(remoteRecord.revision || ''), stateHash: remoteRecord.state_hash || buildIntegrityHash(remoteState), updatedAt: remoteRecord.updated_at || '', loadedAt, savedAt: cloudMeta.savedAt || '' })
+    setCloudStatus(`クラウド復元完了: revision ${remoteRecord.revision || '-'} / hash ${remoteRecord.state_hash || '-'}`)
+    appendAuditEntries(buildAuditEntry({ code: 'SYSTEM', name: 'Supabase同期', fieldName: 'cloudLoad', previousValue: '', newValue: remoteRecord.state_hash || '', changeSource: 'json_restore', decisionBefore: '', decisionAfter: 'LOADED_FROM_CLOUD' }))
   }
 
   const totalCount = filteredStocks.length
@@ -6208,6 +6359,60 @@ export default function PortfolioManagementDashboard() {
           ))}
 
 
+
+          <div className="bg-white/70 backdrop-blur-3xl border border-indigo-100 rounded-[36px] shadow-[0_20px_60px_rgba(15,23,42,0.10)] p-8">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between mb-6">
+              <div>
+                <h2 className="text-2xl font-bold text-slate-900">Supabaseクラウド同期</h2>
+                <p className="text-sm text-slate-500 mt-2">ログイン、クラウド保存、クラウド復元をUIから実行。localStorage単独運用からSupabase同期へ移行する接続層。</p>
+              </div>
+              <div className={`rounded-2xl border px-4 py-2 text-xs font-black ${isSupabaseConfigured ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-red-200 bg-red-50 text-red-700'}`}>
+                {isSupabaseConfigured ? 'SUPABASE CONFIGURED' : 'SUPABASE NOT CONFIGURED'}
+              </div>
+            </div>
+
+            <div className="grid xl:grid-cols-3 gap-4">
+              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                <div className="text-sm font-black text-slate-800 mb-3">認証</div>
+                <input
+                  value={cloudEmail}
+                  onChange={(event) => setCloudEmail(event.target.value)}
+                  disabled={cloudLoading || !isSupabaseConfigured}
+                  placeholder="メールアドレス"
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:border-indigo-400 disabled:opacity-60"
+                />
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button type="button" onClick={handleCloudSignIn} disabled={cloudLoading || !isSupabaseConfigured} className="rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs font-black text-indigo-700 disabled:opacity-50">ログインメール送信</button>
+                  <button type="button" onClick={handleCloudSignOut} disabled={cloudLoading || !cloudUser} className="rounded-xl border border-slate-200 bg-slate-100 px-3 py-2 text-xs font-black text-slate-700 disabled:opacity-50">ログアウト</button>
+                </div>
+                <div className="mt-3 text-xs text-slate-500 break-all">{cloudStatus}</div>
+              </div>
+
+              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                <div className="text-sm font-black text-slate-800 mb-3">同期操作</div>
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" onClick={handleCloudSave} disabled={cloudLoading || !cloudUser || isReadOnlyMode} className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-black text-emerald-700 disabled:opacity-50">クラウド保存</button>
+                  <button type="button" onClick={handleCloudLoad} disabled={cloudLoading || !cloudUser || isReadOnlyMode} className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-black text-amber-700 disabled:opacity-50">クラウド復元</button>
+                </div>
+                <ul className="mt-3 space-y-1 text-xs text-slate-500">
+                  <li>・閲覧モードでは保存/復元不可</li>
+                  <li>・復元はローカル状態を上書き</li>
+                  <li>・保存時にstate_hashとrevisionを記録</li>
+                </ul>
+              </div>
+
+              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                <div className="text-sm font-black text-slate-800 mb-3">同期状態</div>
+                <dl className="space-y-2 text-xs">
+                  <div className="flex justify-between gap-3"><dt className="text-slate-500">user</dt><dd className="text-slate-700 text-right break-all">{cloudUser?.email || cloudUser?.id || '未ログイン'}</dd></div>
+                  <div className="flex justify-between gap-3"><dt className="text-slate-500">revision</dt><dd className="text-slate-700">{cloudMeta.revision || '-'}</dd></div>
+                  <div className="flex justify-between gap-3"><dt className="text-slate-500">hash</dt><dd className="text-slate-700">{cloudMeta.stateHash || '-'}</dd></div>
+                  <div className="flex justify-between gap-3"><dt className="text-slate-500">saved</dt><dd className="text-slate-700">{cloudMeta.savedAt ? formatDate(cloudMeta.savedAt) : '-'}</dd></div>
+                  <div className="flex justify-between gap-3"><dt className="text-slate-500">loaded</dt><dd className="text-slate-700">{cloudMeta.loadedAt ? formatDate(cloudMeta.loadedAt) : '-'}</dd></div>
+                </dl>
+              </div>
+            </div>
+          </div>
 
           <div className="bg-white/70 backdrop-blur-3xl border border-white/60 rounded-[36px] shadow-[0_20px_60px_rgba(15,23,42,0.10)] p-8">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between mb-6">

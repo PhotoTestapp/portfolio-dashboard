@@ -781,3 +781,44 @@ src/config/backendMigrationSpec.js
 - GitHub Pagesには `VITE_SUPABASE_ANON_KEY` のみ配置可能です。
 - `service_role` キーは絶対に配置しないでください。
 - 証券API、PDF本文取得、有料データAPIはサーバー側処理が必要です。
+
+## Supabaseクラウド同期UI
+
+追加機能:
+
+- Supabaseログインメール送信
+- Supabaseログアウト
+- クラウド保存
+- クラウド復元
+- 同期状態表示
+- revision / state_hash / 最終保存日時 / 最終復元日時表示
+- safeMode連動: 閲覧モードでは保存・復元不可
+- auditLog連携: クラウド保存・復元操作を監査ログへ記録
+
+### 前提
+
+`.env` に以下を設定します。
+
+```txt
+VITE_SUPABASE_URL=https://your-project.supabase.co
+VITE_SUPABASE_ANON_KEY=your-public-anon-key
+```
+
+GitHub Pagesへデプロイする場合は、ビルド前に環境変数を設定して `npm run build` してください。`service_role` キーは絶対にフロントエンドへ置かないでください。
+
+### 操作手順
+
+1. Supabaseプロジェクトで `supabase/schema.sql` を実行
+2. Supabase Auth のメールログインを有効化
+3. `.env` を設定
+4. `npm run build`
+5. GitHubへpush
+6. 画面でメールログイン
+7. `EDIT` で編集モード化
+8. クラウド保存 / クラウド復元を実行
+
+### 制約
+
+- 競合解決は最小実装です。複数端末で同時編集した場合は、最後にクラウド保存した状態が優先されます。
+- 復元はローカル状態を上書きします。
+- 厳密なロール別UI制御は未実装です。RLSでユーザー単位の保護を行います。
