@@ -4795,6 +4795,177 @@ export default function PortfolioManagementDashboard() {
     }))
   }, [enrichedStocks, riskPriorityList, coverageDiagnostics, decisionHistory, holdings, settings, riskWeightConfig, integrityMeta])
 
+
+  const externalIntegrationPlan = useMemo(() => {
+    const rows = [
+      {
+        key: 'market_financial_data_api',
+        label: '株価・為替・財務データ自動取得',
+        priorityLevel: 'CRITICAL',
+        unresolvedReason: '現在価格・USD/JPY・財務指標が手動入力のため、判定精度が入力作業に依存する',
+        staticLimitation: 'GitHub Pages単体ではAPIキー秘匿、定期実行、CORS回避、財務データ正規化を安全に処理できない',
+        minimumBackend: 'serverless function + scheduled job + cached normalized dataset',
+        proposedEndpoint: 'GET /api/portfolio/market-data?codes=2914,MSFT',
+        requiredSecrets: 'market_data_api_key / fx_api_key / financial_data_api_key',
+        appSideFallback: '日次更新パック・四半期財務パック・一括貼り付け入力を継続',
+        nextAction: '外部データ取得用バックエンド要件を確定し、手動CSVと同じ列形式で返すAPIを作る',
+      },
+      {
+        key: 'evidence_url_body_verification',
+        label: '根拠URL本文照合',
+        priorityLevel: 'CRITICAL',
+        unresolvedReason: 'sourceUrlの形式、ページ番号、引用、採用値は検証しているが、URL先本文に引用が実在するか未確認',
+        staticLimitation: 'PDF/Web本文の取得はCORS、PDF解析、サイト制限、認証資料の問題があるため静的ページ単体では不安定',
+        minimumBackend: 'document fetcher + PDF/text extractor + quote matcher + source cache',
+        proposedEndpoint: 'POST /api/evidence/verify',
+        requiredSecrets: 'none for public URLs / optional document access token for private sources',
+        appSideFallback: '証跡パックでURL・ページ・引用・採用値を固定し、人間が資料を確認する',
+        nextAction: '証跡検証APIの入力形式 sourceUrl/sourcePage/sourceQuote/sourceMetricName/selectedEvidenceValue を固定する',
+      },
+      {
+        key: 'server_storage_sync',
+        label: 'localStorage依存・複数端末同期',
+        priorityLevel: 'HIGH',
+        unresolvedReason: 'JSONバックアップはあるが、端末変更・ブラウザ削除・複数端末利用では手動移行が必要',
+        staticLimitation: '静的GitHub Pagesだけでは共有DB、競合解決、ユーザー別保存を提供できない',
+        minimumBackend: 'authenticated database + revision history + sync conflict detection',
+        proposedEndpoint: 'GET/PUT /api/portfolio/state',
+        requiredSecrets: 'database_url / service_role_key kept only on backend',
+        appSideFallback: 'JSON保存・復元・完全性ハッシュ・auditLogを継続',
+        nextAction: '保存対象 schema を holdings/settings/history/auditLog/ruleConfig/checklist に固定し、同期単位を決める',
+      },
+      {
+        key: 'auth_permission',
+        label: '認証・権限管理',
+        priorityLevel: 'HIGH',
+        unresolvedReason: 'safeModeは操作ミス対策であり、ユーザー本人性・権限は保証しない',
+        staticLimitation: '静的ページのみではユーザー識別、セッション管理、権限ロールを安全に保証できない',
+        minimumBackend: 'auth provider + role based access control + protected API routes',
+        proposedEndpoint: 'GET /api/me / POST /api/session/verify',
+        requiredSecrets: 'auth_client_secret or server-side auth config',
+        appSideFallback: 'safeMode・DELETE/RESET確認・auditLogで操作事故を抑制',
+        nextAction: 'viewer/editor/admin の3権限を定義し、編集・復元・削除・ルール変更をadmin限定にする',
+      },
+      {
+        key: 'brokerage_integration',
+        label: '証券口座連携',
+        priorityLevel: 'MEDIUM',
+        unresolvedReason: 'actionTrackingは手動実行記録であり、実約定・保有残高・配当入金と自動照合できない',
+        staticLimitation: '証券口座連携はOAuth/認可、秘匿トークン、API制限、金融機関ごとの仕様差がある',
+        minimumBackend: 'broker connector + encrypted token store + read-only reconciliation job',
+        proposedEndpoint: 'GET /api/brokerage/positions / GET /api/brokerage/trades',
+        requiredSecrets: 'broker_oauth_client_secret / encrypted refresh tokens',
+        appSideFallback: 'actionTracking・outcomeEvaluation・監査ログで手動記録',
+        nextAction: 'まず read-only 照合に限定し、自動売買は対象外にする',
+      },
+    ]
+
+    const priorityScore = { CRITICAL: 100, HIGH: 70, MEDIUM: 40, LOW: 10 }
+    const scoredRows = rows.map((row, index) => ({ ...row, rank: index + 1, score: priorityScore[row.priorityLevel] || 0 }))
+    const stats = {
+      total: scoredRows.length,
+      critical: scoredRows.filter((row) => row.priorityLevel === 'CRITICAL').length,
+      high: scoredRows.filter((row) => row.priorityLevel === 'HIGH').length,
+      backendRequired: scoredRows.length,
+      totalScore: scoredRows.reduce((sum, row) => sum + row.score, 0),
+    }
+    return { rows: scoredRows, stats }
+  }, [])
+
+  const exportExternalIntegrationPlanCsv = () => {
+    const header = ['rank', 'key', 'label', 'priorityLevel', 'score', 'unresolvedReason', 'staticLimitation', 'minimumBackend', 'proposedEndpoint', 'requiredSecrets', 'appSideFallback', 'nextAction']
+    const rows = externalIntegrationPlan.rows.map((item) => header.map((key) => item[key] ?? ''))
+    const csv = toCsvText([header, ...rows])
+    downloadTextFile(`﻿${csv}`, 'portfolio-external-integration-plan.csv', 'text/csv;charset=utf-8;')
+  }
+
+  const exportBackendMigrationSpecJson = () => {
+    const generatedAt = new Date().toISOString()
+    const spec = {
+      app: 'portfolio-dashboard',
+      generatedAt,
+      staticHosting: 'GitHub Pages',
+      currentClientStorage: 'localStorage + JSON backup',
+      targetArchitecture: {
+        frontend: 'existing React/Vite static app',
+        backend: 'serverless API or small backend service',
+        storage: 'authenticated database with revision history',
+        scheduledJobs: ['market-data-refresh', 'fx-refresh', 'financial-data-refresh', 'evidence-url-verification'],
+        security: ['server-side secrets only', 'read-only market data endpoints', 'role based editing permissions'],
+      },
+      apiContracts: [
+        {
+          endpoint: 'GET /api/portfolio/market-data',
+          purpose: 'currentPrice / annualDividend / priceUpdatedAt / fxUpdatedAt を返す',
+          responseShape: { code: '2914', currentPrice: 0, annualDividend: 0, currency: 'JPY', priceUpdatedAt: 'YYYY-MM-DD', sourceName: '', sourceUrl: '' },
+        },
+        {
+          endpoint: 'GET /api/portfolio/financial-data',
+          purpose: 'payoutRatio / operatingCashFlowYoY / revenueYoY / epsYoY / equityRatio / debtToEquity / profile metrics を返す',
+          responseShape: { code: '2914', fiscalPeriod: 'FY2025 Q2', dataType: 'actual', financialUpdatedAt: 'YYYY-MM-DD', metrics: {} },
+        },
+        {
+          endpoint: 'POST /api/evidence/verify',
+          purpose: '根拠URL本文と sourceQuote / selectedEvidenceValue の照合',
+          requestShape: { code: '2914', sourceUrl: '', sourcePage: 1, sourceQuote: '', selectedEvidenceValue: '' },
+          responseShape: { verified: false, matchedText: '', matchScore: 0, checkedAt: generatedAt },
+        },
+        {
+          endpoint: 'GET/PUT /api/portfolio/state',
+          purpose: 'holdings/settings/history/auditLog/ruleConfig/checklist をユーザー別に保存・同期',
+          responseShape: { revision: '', updatedAt: generatedAt, state: {} },
+        },
+        {
+          endpoint: 'GET /api/brokerage/positions',
+          purpose: '証券口座の保有残高を読み取り照合。自動売買は対象外',
+          responseShape: { code: '2914', shares: 0, averagePrice: 0, checkedAt: generatedAt },
+        },
+      ],
+      unresolvedPriorities: externalIntegrationPlan.rows,
+      currentCounts: {
+        stocks: enrichedStocks.length,
+        decisionHistory: decisionHistory.length,
+        auditLog: auditLog.length,
+        updatePackRows: updatePackSummary.reduce((sum, pack) => sum + pack.rowCount, 0),
+      },
+    }
+    downloadTextFile(JSON.stringify(spec, null, 2), `portfolio-backend-migration-spec-${generatedAt.slice(0, 10)}.json`, 'application/json;charset=utf-8;')
+  }
+
+  const exportExternalDataConnectorTemplateCsv = () => {
+    const header = ['code', 'name', 'market', 'currency', 'requiredEndpoint', 'fieldName', 'currentValue', 'targetValue', 'sourceName', 'sourceUrl', 'sourceUpdatedAt', 'importedValue']
+    const baseFields = ['currentPrice', 'annualDividend', 'priceUpdatedAt', 'payoutRatio', 'operatingCashFlowYoY', 'revenueYoY', 'epsYoY', 'equityRatio', 'debtToEquity', 'financialUpdatedAt']
+    const rows = enrichedStocks.flatMap((stock) => baseFields.map((fieldName) => [
+      stock.code,
+      stock.name,
+      stock.market,
+      stock.currency,
+      ['currentPrice', 'annualDividend', 'priceUpdatedAt'].includes(fieldName) ? '/api/portfolio/market-data' : '/api/portfolio/financial-data',
+      fieldName,
+      stock.holding?.[fieldName] ?? '',
+      '',
+      stock.sourceName || '',
+      stock.sourceUrl || '',
+      fieldName === 'priceUpdatedAt' ? stock.priceUpdatedAt : stock.financialUpdatedAt,
+      '',
+    ]))
+    const fxRows = [
+      ['FX', 'USD/JPY', '為替', 'JPY', '/api/portfolio/market-data', 'usdJpy', usdJpyInput, '', 'FX source', '', fxUpdatedAtInput, ''],
+      ['FX', 'USD/JPY', '為替', 'JPY', '/api/portfolio/market-data', 'fxUpdatedAt', fxUpdatedAtInput, '', 'FX source', '', fxUpdatedAtInput, ''],
+    ]
+    const csv = toCsvText([header, ...fxRows, ...rows])
+    downloadTextFile(`﻿${csv}`, 'portfolio-external-data-connector-template.csv', 'text/csv;charset=utf-8;')
+  }
+
+  const exportEvidenceUrlVerificationPackCsv = () => {
+    const header = ['code', 'name', 'sourceUrl', 'sourcePage', 'sourceQuote', 'sourceMetricName', 'sourceUnit', 'selectedEvidenceValue', 'verificationTarget', 'manualCheckStatus', 'backendEndpoint']
+    const rows = enrichedStocks
+      .filter((stock) => stock.sourceUrl || stock.sourceQuote || ['UNVERIFIED_DATA', 'WEAK_EVIDENCE', 'MISMATCHED_EVIDENCE', 'MULTIPLE_EVIDENCE_VALUES'].includes(stock.decisionResult?.decision))
+      .map((stock) => [stock.code, stock.name, stock.sourceUrl, stock.sourcePage, stock.sourceQuote, stock.sourceMetricName, stock.sourceUnit, stock.selectedEvidenceValue, 'URL本文に引用文と採用値が存在するか確認', '', '/api/evidence/verify'])
+    const csv = toCsvText([header, ...rows])
+    downloadTextFile(`﻿${csv}`, 'portfolio-evidence-url-verification-pack.csv', 'text/csv;charset=utf-8;')
+  }
+
   const applyRiskWeightRecommendations = () => {
     const actionable = riskWeightDiagnostics.filter((item) => ['INCREASE', 'DECREASE'].includes(item.recommendation) && item.evaluatedCount >= 3 && item.suggestedWeight !== item.currentWeight)
     if (actionable.length === 0) {
@@ -5007,6 +5178,58 @@ export default function PortfolioManagementDashboard() {
                   <div className="rounded-xl bg-white p-2"><div className="text-lg font-black text-red-700">{pack.highCount}</div><div className="font-bold text-slate-500">HIGH</div></div>
                 </div>
                 <div className="mt-3 rounded-xl border border-orange-100 bg-white p-3 text-xs font-semibold leading-relaxed text-slate-600">最上位理由: {pack.topReason}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+      <div className="relative z-10 px-6 pt-6">
+        <div className="mx-auto max-w-7xl rounded-[32px] border border-indigo-100 bg-white/85 p-6 shadow-[0_20px_60px_rgba(15,23,42,0.08)] backdrop-blur-3xl">
+          <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <h2 className="text-2xl font-black text-slate-900">外部基盤連携・自動化移行キュー</h2>
+              <p className="mt-1 text-sm font-semibold text-slate-500">静的GitHub Pages単体で未解決の項目を、バックエンド/API/同期基盤に移すための仕様へ分解します。</p>
+              <p className="mt-1 text-xs font-bold text-indigo-700">この画面は自動取得そのものではなく、自動取得・認証・同期・本文照合を実装するための接続仕様と作業パックです。</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" onClick={exportExternalIntegrationPlanCsv} className="rounded-2xl border border-indigo-300 bg-indigo-50 px-4 py-2 text-xs font-black text-indigo-700 hover:bg-indigo-100">連携計画CSV</button>
+              <button type="button" onClick={exportBackendMigrationSpecJson} className="rounded-2xl border border-indigo-300 bg-white px-4 py-2 text-xs font-black text-indigo-700 hover:bg-indigo-50">API仕様JSON</button>
+              <button type="button" onClick={exportExternalDataConnectorTemplateCsv} className="rounded-2xl border border-indigo-300 bg-white px-4 py-2 text-xs font-black text-indigo-700 hover:bg-indigo-50">外部データ取込テンプレート</button>
+              <button type="button" onClick={exportEvidenceUrlVerificationPackCsv} className="rounded-2xl border border-indigo-300 bg-indigo-600 px-4 py-2 text-xs font-black text-white hover:bg-indigo-700">URL本文照合Pack</button>
+            </div>
+          </div>
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+            <MetricCard label="未解決連携項目" value={externalIntegrationPlan.stats.total} subLabel="外部基盤が必要" tone="slate" />
+            <MetricCard label="CRITICAL" value={externalIntegrationPlan.stats.critical} subLabel="最優先" tone={externalIntegrationPlan.stats.critical > 0 ? 'red' : 'emerald'} />
+            <MetricCard label="HIGH" value={externalIntegrationPlan.stats.high} subLabel="高優先" tone={externalIntegrationPlan.stats.high > 0 ? 'amber' : 'emerald'} />
+            <MetricCard label="バックエンド必須" value={externalIntegrationPlan.stats.backendRequired} subLabel="静的サイト外で処理" tone="indigo" />
+            <MetricCard label="移行スコア" value={externalIntegrationPlan.stats.totalScore} subLabel="外部基盤移行優先度" tone={externalIntegrationPlan.stats.totalScore > 300 ? 'red' : 'amber'} />
+          </div>
+          <div className="mt-5 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+            <div className="grid grid-cols-[52px_1fr_92px_1.15fr_1.05fr_1.05fr] gap-3 border-b border-slate-100 bg-slate-50 px-4 py-3 text-[11px] font-bold text-slate-500">
+              <div>順位</div>
+              <div>未解決項目</div>
+              <div>優先</div>
+              <div>静的構成の限界</div>
+              <div>必要な外部基盤</div>
+              <div>次アクション</div>
+            </div>
+            {externalIntegrationPlan.rows.map((item) => (
+              <div key={item.key} className="grid grid-cols-[52px_1fr_92px_1.15fr_1.05fr_1.05fr] gap-3 border-b border-slate-100 px-4 py-3 text-xs last:border-b-0">
+                <div className="font-black text-slate-900">#{item.rank}</div>
+                <div>
+                  <div className="font-black text-slate-900">{item.label}</div>
+                  <div className="mt-1 text-[11px] font-semibold leading-relaxed text-slate-500">{item.unresolvedReason}</div>
+                  <div className="mt-2 rounded-xl border border-indigo-100 bg-indigo-50 p-2 text-[11px] font-semibold text-indigo-700">代替運用: {item.appSideFallback}</div>
+                </div>
+                <div><span className={`rounded-full border px-2 py-1 text-[11px] font-black ${item.priorityLevel === 'CRITICAL' ? 'border-red-200 bg-red-50 text-red-700' : item.priorityLevel === 'HIGH' ? 'border-amber-200 bg-amber-50 text-amber-700' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>{item.priorityLevel}</span></div>
+                <div className="font-semibold leading-relaxed text-slate-600">{item.staticLimitation}</div>
+                <div>
+                  <div className="font-semibold leading-relaxed text-slate-700">{item.minimumBackend}</div>
+                  <div className="mt-2 rounded-xl border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-500">Endpoint: {item.proposedEndpoint}</div>
+                  <div className="mt-1 text-[11px] font-semibold text-red-600">Secrets: {item.requiredSecrets}</div>
+                </div>
+                <div className="font-semibold leading-relaxed text-slate-700">{item.nextAction}</div>
               </div>
             ))}
           </div>
