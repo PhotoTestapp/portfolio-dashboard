@@ -22,6 +22,65 @@ const SAFE_MODE_VERSION = '2026.05-safe-mode-v1'
 const GUIDED_WORKFLOW_KEY = 'portfolio-dashboard-guided-workflow-v1'
 const GUIDED_WORKFLOW_VERSION = '2026.05-guided-workflow-v1'
 
+
+const unresolvedRiskDefinitions = [
+  {
+    key: 'AUTO_DATA_FETCH',
+    label: '株価・為替・財務データ自動取得なし',
+    category: 'DATA_COLLECTION',
+    staticLimit: 'GitHub Pages単体では外部APIの秘匿キー管理ができないため完全自動取得は不可。',
+    mitigation: '日次・四半期データ更新パックと一括貼り付け入力で手動更新の漏れを減らす。',
+    nextAction: '価格・為替・財務の不足/期限切れ項目を優先して入力候補へ回す。',
+  },
+  {
+    key: 'SOURCE_BODY_VERIFICATION',
+    label: '根拠URL本文との自動照合なし',
+    category: 'EVIDENCE',
+    staticLimit: '静的サイトから外部PDF/IRページ本文を安定取得して照合することは困難。',
+    mitigation: 'URL・ページ・引用・採用値・入力値一致チェックで再確認可能性を上げる。',
+    nextAction: 'WEAK/MULTIPLE/MISMATCH/UNVERIFIEDを優先して証跡修正。',
+  },
+  {
+    key: 'LOCAL_STORAGE_DEPENDENCY',
+    label: 'localStorage依存・複数端末同期なし',
+    category: 'PERSISTENCE',
+    staticLimit: 'ブラウザ内保存のため端末間同期・サーバー永続化は不可。',
+    mitigation: 'JSONバックアップ、完全性ハッシュ、復元ログ、週次バックアップタスクで損失を抑制。',
+    nextAction: '最終バックアップ日時と完全性スコアを監視し、期限切れならJSON保存。',
+  },
+  {
+    key: 'AUTHORIZATION',
+    label: '認証・権限管理なし',
+    category: 'SECURITY',
+    staticLimit: '静的公開サイトのため厳密なユーザー認証・権限分離は不可。',
+    mitigation: 'safeMode、危険操作確認、auditLogで誤操作を抑制。',
+    nextAction: '編集モードのまま放置しない。重要操作は監査ログで確認。',
+  },
+  {
+    key: 'BROKER_ACCOUNT_INTEGRATION',
+    label: '証券口座・約定データ連携なし',
+    category: 'EXECUTION',
+    staticLimit: '証券口座APIや認証付き約定データ取得は静的サイト単体では不可。',
+    mitigation: 'actionTrackingで実行日・価格・株数・遵守率を手動記録。',
+    nextAction: 'SELL/REDUCE未実行と逆行実行を優先処理。',
+  },
+  {
+    key: 'OUTCOME_DATA_COVERAGE',
+    label: '結果評価データ不足',
+    category: 'BACKTEST',
+    staticLimit: '判定成績はoutcome入力がないと測定不能。',
+    mitigation: 'outcomeEvaluationとriskWeightDiagnosticsで評価済み履歴を使う。',
+    nextAction: '評価済み履歴を増やし、NEED_DATAを減らす。',
+  },
+]
+
+const unresolvedLevelTone = {
+  CRITICAL: 'border-red-200 bg-red-50 text-red-800',
+  HIGH: 'border-amber-200 bg-amber-50 text-amber-800',
+  MEDIUM: 'border-sky-200 bg-sky-50 text-sky-800',
+  LOW: 'border-emerald-200 bg-emerald-50 text-emerald-800',
+}
+
 const DEFAULT_RISK_WEIGHT_CONFIG = {
   riskScoreVersion: RISK_SCORE_VERSION,
   riskWeightReviewedAt: '',
@@ -4399,7 +4458,89 @@ export default function PortfolioManagementDashboard() {
           priority,
         }
       })
+
   }, [coverageDiagnostics.blockers, enrichedStocks])
+
+  const unresolvedRiskPlan = useMemo(() => {
+    const blockingDecisions = ['INVALID_DATA', 'UNVERIFIED_DATA', 'WEAK_EVIDENCE', 'MULTIPLE_EVIDENCE_VALUES', 'MISMATCHED_EVIDENCE', 'PROFILE_DATA_REQUIRED', 'RULE_CONFIG_REQUIRED', 'STALE_DATA', 'NO_DATA']
+    const daysSince = (dateText) => {
+      if (!dateText) return null
+      const parsed = new Date(dateText)
+      if (Number.isNaN(parsed.getTime())) return null
+      return Math.floor((Date.now() - parsed.getTime()) / 86400000)
+    }
+    const latestBackupAge = daysSince(integrityMeta.lastBackupAt)
+    const stopDecisionCount = blockingDecisions.reduce((sum, key) => sum + (portfolioSummary.decisionCounts?.[key] || 0), 0)
+    const evidenceIssueCount = (portfolioSummary.decisionCounts?.UNVERIFIED_DATA || 0) + (portfolioSummary.decisionCounts?.WEAK_EVIDENCE || 0) + (portfolioSummary.decisionCounts?.MULTIPLE_EVIDENCE_VALUES || 0) + (portfolioSummary.decisionCounts?.MISMATCHED_EVIDENCE || 0)
+    const staleIssueCount = (portfolioSummary.decisionCounts?.STALE_DATA || 0) + (portfolioSummary.priceStaleStocks?.length || 0) + (portfolioSummary.financialStaleStocks?.length || 0) + (portfolioSummary.fxStaleStocks?.length || 0)
+    const notExecutedCount = decisionHistory.filter((item) => ['SELL', 'REDUCE', 'BUY'].includes(item.decision) && (!item.actionTaken || item.complianceStatus === 'NOT_EXECUTED')).length
+    const contradictedCount = decisionHistory.filter((item) => ['CONTRADICTED', 'NON_COMPLIANT'].includes(item.complianceStatus)).length
+    const outcomeMissingCount = decisionHistory.filter((item) => ['BUY', 'SELL', 'REDUCE', 'HOLD', 'WATCH'].includes(item.decision) && !item.decisionAccuracy).length
+    const needDataCount = riskWeightDiagnostics.filter((item) => item.recommendation === 'NEED_DATA').length
+
+    const metrics = {
+      AUTO_DATA_FETCH: {
+        score: Math.min(150, staleIssueCount * 8 + (coverageDiagnostics.missingFields || 0) * 0.4 + (coverageDiagnostics.coverageScore < 80 ? 30 : 0)),
+        count: staleIssueCount,
+        evidence: `期限切れ/未更新 ${staleIssueCount}件、カバレッジ ${Math.round(coverageDiagnostics.coverageScore || 0)}%`,
+        action: bulkInputSuggestions.length > 0 ? '入力候補CSV/貼付用TSVを出力し、期限切れ・不足データから更新。' : '期限切れ件数を確認し、日次/四半期ワークフローで更新。',
+      },
+      SOURCE_BODY_VERIFICATION: {
+        score: Math.min(150, evidenceIssueCount * 10 + (portfolioSummary.evidenceNotApplicableStocks?.length || 0) * 2),
+        count: evidenceIssueCount,
+        evidence: `証跡系停止 ${evidenceIssueCount}件、照合対象外 ${portfolioSummary.evidenceNotApplicableStocks?.length || 0}件`,
+        action: 'UNVERIFIED/WEAK/MULTIPLE/MISMATCHを優先してURL・ページ・引用・採用値を修正。',
+      },
+      LOCAL_STORAGE_DEPENDENCY: {
+        score: Math.min(150, (latestBackupAge === null ? 60 : latestBackupAge > 7 ? 50 : latestBackupAge > 3 ? 25 : 5) + (integritySummary.dataCompletenessScore < 80 ? 35 : 0) + (integritySummary.missingCriticalFieldCount || 0) * 1.5),
+        count: integritySummary.missingCriticalFieldCount || 0,
+        evidence: `完全性 ${integritySummary.dataCompletenessScore}/100、最終バックアップ ${latestBackupAge === null ? 'なし' : `${latestBackupAge}日前`}`,
+        action: 'JSON保存を実行し、backupIntegrityHashとlastBackupAtを更新。復元後は完全性スコア確認。',
+      },
+      AUTHORIZATION: {
+        score: Math.min(120, (isReadOnlyMode ? 15 : 45) + (auditLog.filter((item) => item.impactLevel === 'HIGH').length > 0 ? 15 : 0)),
+        count: auditLog.filter((item) => item.impactLevel === 'HIGH').length,
+        evidence: `現在 ${isReadOnlyMode ? '閲覧モード' : '編集モード'}、HIGH監査ログ ${auditLog.filter((item) => item.impactLevel === 'HIGH').length}件`,
+        action: '作業後は閲覧モードへ戻す。HIGH影響変更は監査ログCSVで確認。',
+      },
+      BROKER_ACCOUNT_INTEGRATION: {
+        score: Math.min(150, notExecutedCount * 8 + contradictedCount * 20),
+        count: notExecutedCount + contradictedCount,
+        evidence: `未実行 ${notExecutedCount}件、逆行/非遵守 ${contradictedCount}件`,
+        action: 'SELL/REDUCE/BUYの未実行理由、実行日、実行価格、株数をactionTrackingへ入力。',
+      },
+      OUTCOME_DATA_COVERAGE: {
+        score: Math.min(150, outcomeMissingCount * 4 + needDataCount * 12 + (coverageDiagnostics.outcomeCoverageRate < 70 ? 30 : 0)),
+        count: outcomeMissingCount + needDataCount,
+        evidence: `outcome未評価 ${outcomeMissingCount}件、重み診断NEED_DATA ${needDataCount}件、評価率 ${Math.round(coverageDiagnostics.outcomeCoverageRate || 0)}%`,
+        action: '判定履歴の結果価格・配当・結果確認日を入力し、重み診断のNEED_DATAを減らす。',
+      },
+    }
+
+    const rows = unresolvedRiskDefinitions.map((definition) => {
+      const metric = metrics[definition.key] || { score: 0, count: 0, evidence: '', action: definition.nextAction }
+      const score = Math.round(metric.score || 0)
+      const priorityLevel = score >= 100 ? 'CRITICAL' : score >= 70 ? 'HIGH' : score >= 35 ? 'MEDIUM' : 'LOW'
+      return { ...definition, ...metric, score, priorityLevel }
+    }).sort((a, b) => b.score - a.score || b.count - a.count)
+
+    const stats = {
+      total: rows.length,
+      critical: rows.filter((item) => item.priorityLevel === 'CRITICAL').length,
+      high: rows.filter((item) => item.priorityLevel === 'HIGH').length,
+      unresolvedScore: rows.reduce((sum, item) => sum + item.score, 0),
+      top: rows[0],
+      staticBlocked: rows.filter((item) => item.staticLimit.includes('不可') || item.staticLimit.includes('困難')).length,
+    }
+    return { rows, stats }
+  }, [portfolioSummary, coverageDiagnostics, integrityMeta, integritySummary, decisionHistory, riskWeightDiagnostics, auditLog, isReadOnlyMode, bulkInputSuggestions])
+
+  const exportUnresolvedRiskPlanCsv = () => {
+    const header = ['rank', 'key', 'label', 'category', 'priorityLevel', 'score', 'count', 'evidence', 'staticLimit', 'mitigation', 'nextAction']
+    const rows = unresolvedRiskPlan.rows.map((item, index) => [index + 1, item.key, item.label, item.category, item.priorityLevel, item.score, item.count, item.evidence, item.staticLimit, item.mitigation, item.action || item.nextAction])
+    const csv = [header, ...rows].map((row) => row.map((cell) => `"${String(cell ?? '').replaceAll('"', '""')}"`).join(',')).join('\n')
+    downloadTextFile(`﻿${csv}`, 'portfolio-unresolved-risk-priority.csv', 'text/csv;charset=utf-8;')
+  }
 
   const exportBulkInputSuggestionsCsv = () => {
     const header = ['code', 'name', 'market', 'group', 'ruleProfile', 'suggestedField', 'suggestedFieldLabel', 'suggestedReason', 'requiredEvidence', 'inputHint', 'pasteTemplate', 'currentDecision', 'riskPriorityScore', 'coverageScore', 'impact', 'priority']
@@ -4553,6 +4694,51 @@ export default function PortfolioManagementDashboard() {
                 </div>
               ))}
             </div>
+          </div>
+        </div>
+      </div>
+      <div className="relative z-10 px-6 pt-6">
+        <div className="mx-auto max-w-7xl rounded-[32px] border border-red-100 bg-white/85 p-6 shadow-[0_20px_60px_rgba(15,23,42,0.08)] backdrop-blur-3xl">
+          <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <h2 className="text-2xl font-black text-slate-900">未解決リスク優先改修キュー</h2>
+              <p className="mt-1 text-sm font-semibold text-slate-500">未解決項目を、現在のデータ状態から機械的に優先順位化。静的GitHub Pagesで直接解決できない項目は、代替策と次アクションを固定。</p>
+            </div>
+            <button type="button" onClick={exportUnresolvedRiskPlanCsv} className="rounded-2xl border border-red-300 bg-red-50 px-4 py-2 text-xs font-black text-red-700 hover:bg-red-100">未解決リスクCSV</button>
+          </div>
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+            <MetricCard label="未解決スコア合計" value={unresolvedRiskPlan.stats.unresolvedScore} subLabel="残課題の加重点数" tone={unresolvedRiskPlan.stats.unresolvedScore > 300 ? 'red' : unresolvedRiskPlan.stats.unresolvedScore > 180 ? 'amber' : 'emerald'} />
+            <MetricCard label="CRITICAL" value={unresolvedRiskPlan.stats.critical} subLabel="即時優先" tone={unresolvedRiskPlan.stats.critical > 0 ? 'red' : 'emerald'} />
+            <MetricCard label="HIGH" value={unresolvedRiskPlan.stats.high} subLabel="高優先" tone={unresolvedRiskPlan.stats.high > 0 ? 'amber' : 'emerald'} />
+            <MetricCard label="静的構成の限界" value={unresolvedRiskPlan.stats.staticBlocked} subLabel="完全解決に外部基盤が必要" tone="slate" />
+            <MetricCard label="最優先" value={unresolvedRiskPlan.stats.top?.priorityLevel || 'なし'} subLabel={unresolvedRiskPlan.stats.top?.label || '対象なし'} tone={unresolvedRiskPlan.stats.top?.priorityLevel === 'CRITICAL' ? 'red' : unresolvedRiskPlan.stats.top?.priorityLevel === 'HIGH' ? 'amber' : 'sky'} />
+          </div>
+          <div className="mt-5 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+            <div className="grid grid-cols-[52px_1fr_90px_90px_1.2fr_1.2fr] gap-3 border-b border-slate-100 bg-slate-50 px-4 py-3 text-[11px] font-bold text-slate-500">
+              <div>順位</div>
+              <div>未解決項目</div>
+              <div>優先</div>
+              <div className="text-right">点数</div>
+              <div>根拠</div>
+              <div>次アクション</div>
+            </div>
+            {unresolvedRiskPlan.rows.map((item, index) => (
+              <div key={item.key} className="grid grid-cols-[52px_1fr_90px_90px_1.2fr_1.2fr] gap-3 border-b border-slate-100 px-4 py-3 text-xs last:border-b-0">
+                <div className="font-black text-slate-900">#{index + 1}</div>
+                <div>
+                  <div className="font-black text-slate-900">{item.label}</div>
+                  <div className="mt-1 text-[11px] font-semibold text-slate-500">{item.category}</div>
+                  <div className="mt-1 text-[11px] text-slate-500">制約: {item.staticLimit}</div>
+                </div>
+                <div><span className={`rounded-full border px-2 py-1 text-[11px] font-black ${unresolvedLevelTone[item.priorityLevel] || unresolvedLevelTone.LOW}`}>{item.priorityLevel}</span></div>
+                <div className="text-right text-lg font-black text-slate-900">{item.score}</div>
+                <div className="font-semibold leading-relaxed text-slate-600">{item.evidence}</div>
+                <div>
+                  <div className="font-semibold leading-relaxed text-slate-700">{item.action || item.nextAction}</div>
+                  <div className="mt-2 rounded-xl border border-slate-200 bg-slate-50 p-2 text-[11px] leading-relaxed text-slate-500">代替策: {item.mitigation}</div>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       </div>
