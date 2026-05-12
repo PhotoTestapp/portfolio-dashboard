@@ -5195,6 +5195,82 @@ export default function PortfolioManagementDashboard() {
         </div>
       </div>
       <div className="relative z-10 px-6 pt-6">
+        <div className="mx-auto mb-6 max-w-7xl rounded-[32px] border border-slate-200 bg-white/95 p-6 shadow-[0_20px_60px_rgba(15,23,42,0.08)] backdrop-blur-3xl">
+          <div className="mb-5 flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+            <div>
+              <h1 className="text-3xl font-black tracking-tight text-slate-900">今日見るべきこと</h1>
+              <p className="mt-2 text-sm font-semibold text-slate-500">既存画面は壊さず、上部に最重要項目だけを追加。通常運用はこの10件から処理。</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs font-bold text-slate-600">
+              表示方針: 要対応Top10 / 詳細は下の既存画面で確認
+            </div>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
+            <MetricCard label="SELL" value={portfolioSummary.decisionCounts.SELL || 0} subLabel="最優先" tone="red" />
+            <MetricCard label="REDUCE" value={portfolioSummary.decisionCounts.REDUCE || 0} subLabel="削減確認" tone="amber" />
+            <MetricCard label="判定停止" value={['INVALID_DATA','UNVERIFIED_DATA','WEAK_EVIDENCE','MULTIPLE_EVIDENCE_VALUES','MISMATCHED_EVIDENCE','PROFILE_DATA_REQUIRED','RULE_CONFIG_REQUIRED','STALE_DATA','NO_DATA'].reduce((sum, key) => sum + (portfolioSummary.decisionCounts[key] || 0), 0)} subLabel="入力・根拠・期限" tone="amber" />
+            <MetricCard label="未実行SELL/REDUCE" value={(actionStats.sellNotExecuted || 0) + (actionStats.reduceNotExecuted || 0)} subLabel="履歴ベース" tone="red" />
+            <MetricCard label="不足入力候補" value={bulkInputSuggestions.length} subLabel="次に埋める項目" tone="sky" />
+            <MetricCard label="HIGH期限切れタスク" value={checklistStats.highOverdue || 0} subLabel={`完了率 ${formatPercent(checklistStats.completionRate)}`} tone="amber" />
+          </div>
+
+          <div className="mt-6 grid gap-4 xl:grid-cols-3">
+            <div className="xl:col-span-2 rounded-3xl border border-slate-200 bg-slate-50 p-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <h2 className="text-lg font-black text-slate-900">要対応Top10</h2>
+                <span className="rounded-full bg-white px-3 py-1 text-xs font-black text-slate-500">riskPriority順</span>
+              </div>
+              <div className="space-y-2">
+                {riskPriorityList.slice(0, 10).map((stock) => (
+                  <div key={`mini-command-${stock.code}`} className="rounded-2xl border border-white bg-white p-3 shadow-sm">
+                    <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="rounded-full bg-slate-900 px-2.5 py-1 text-[11px] font-black text-white">#{stock.riskPriorityRank}</span>
+                          <span className="font-black text-slate-900">{stock.code}</span>
+                          <span className="truncate text-sm font-semibold text-slate-500">{stock.name}</span>
+                          <DecisionBadge result={stock.decisionResult || { decision: 'NO_DATA' }} />
+                        </div>
+                        <div className="mt-1 text-xs font-semibold text-slate-500">
+                          {stock.riskDrivers?.slice(0, 3).map((driver) => driver.label || driver.reason || driver).join(' / ') || stock.decisionResult?.reasons?.slice(0, 2).join(' / ') || 'リスク要因なし'}
+                        </div>
+                      </div>
+                      <div className="flex shrink-0 flex-wrap gap-2 text-xs font-bold">
+                        <span className={`rounded-full border px-3 py-1 ${riskPriorityTone[stock.riskPriorityLevel] || 'border-slate-200 bg-slate-50 text-slate-700'}`}>{stock.riskPriorityLevel}</span>
+                        <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-slate-600">score {stock.riskPriorityScore || 0}</span>
+                        <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-slate-600">比率 {formatPercent(stock.positionWeight)}</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                {riskPriorityList.length === 0 && <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm font-semibold text-slate-500">表示対象なし</div>}
+              </div>
+            </div>
+
+            <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <h2 className="text-lg font-black text-slate-900">次に埋める入力Top10</h2>
+                <span className="rounded-full bg-white px-3 py-1 text-xs font-black text-slate-500">coverage順</span>
+              </div>
+              <div className="space-y-2">
+                {bulkInputSuggestions.slice(0, 10).map((item, index) => (
+                  <div key={`mini-input-${item.code}-${item.suggestedField}-${index}`} className="rounded-2xl border border-white bg-white p-3 shadow-sm">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-black text-slate-900">{item.code} {item.name}</div>
+                        <div className="mt-1 text-xs font-bold text-sky-700">{item.missingFieldLabel || item.suggestedField}</div>
+                        <div className="mt-1 text-[11px] font-semibold text-slate-500">{item.suggestedReason || item.inputHint || '不足項目の補完が必要'}</div>
+                      </div>
+                      <span className={`shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-black ${item.impact === 'HIGH' ? 'border-red-200 bg-red-50 text-red-700' : item.impact === 'MEDIUM' ? 'border-amber-200 bg-amber-50 text-amber-700' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>{item.impact || 'LOW'}</span>
+                    </div>
+                  </div>
+                ))}
+                {bulkInputSuggestions.length === 0 && <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm font-semibold text-slate-500">不足入力候補なし</div>}
+              </div>
+            </div>
+          </div>
+        </div>
         <div className="mx-auto max-w-7xl rounded-[32px] border border-white/70 bg-white/85 p-6 shadow-[0_20px_60px_rgba(15,23,42,0.08)] backdrop-blur-3xl">
           <div className="mb-4 flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
             <div>
