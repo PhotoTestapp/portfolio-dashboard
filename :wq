@@ -1,0 +1,21 @@
+Revert "Add command center layout"
+
+This reverts commit 6f53af5223f8f9d0e27d557895ec28198f0eb7c8.
+
+# Please enter the commit message for your changes. Lines starting
+# with '#' will be ignored, and an empty message aborts the commit.
+#
+# Committer: HaradaSeiya <haradaseiya@HaradaSeiyanoMacBook-Air.local>
+#
+# On branch main
+# Your branch is up to date with 'origin/main'.
+#
+# Changes to be committed:
+#	deleted:    dist/assets/index-CLugcqdx.js
+#	new file:   dist/assets/index-D5syqrpE.css
+#	deleted:    dist/assets/index-DEAPYf2z.css
+#	new file:   dist/assets/index-DxGIBjJv.js
+#	modified:   dist/index.html
+#	modified:   package-lock.json
+#	modified:   src/App.jsx
+#
