@@ -2085,71 +2085,53 @@ const getBuyChecksByProfile = (stock) => {
   }
 }
 
-const judgeStock = (stock) => {
-  if (stock.validationErrors?.length > 0) {
-    return {
-      decision: 'INVALID_DATA',
-      severity: 'CRITICAL',
-      reasons: stock.validationErrors,
-    }
-  }
 
-  if (stock.verificationErrors?.length > 0) {
-    return {
-      decision: 'UNVERIFIED_DATA',
-      severity: 'HIGH',
-      reasons: stock.verificationErrors,
-    }
-  }
+const executionDecisionSet = new Set(['SELL', 'REDUCE', 'BUY'])
 
-  if (stock.evidenceErrors?.length > 0) {
-    return {
-      decision: 'WEAK_EVIDENCE',
-      severity: 'HIGH',
-      reasons: stock.evidenceErrors,
-    }
-  }
+const getEvidenceIssueReasons = (stock) => [
+  ...(stock.verificationErrors || []),
+  ...(stock.evidenceErrors || []),
+  ...(stock.multipleEvidenceValueErrors || []),
+  ...(stock.evidenceMatchErrors || []),
+]
 
-  if (stock.multipleEvidenceValueErrors?.length > 0) {
-    return {
-      decision: 'MULTIPLE_EVIDENCE_VALUES',
-      severity: 'HIGH',
-      reasons: stock.multipleEvidenceValueErrors,
-    }
+const getStrictEvidenceDecision = (stock, coreDecision) => {
+  if ((stock.verificationErrors || []).length > 0) {
+    return { decision: 'UNVERIFIED_DATA', severity: 'HIGH', reasons: stock.verificationErrors }
   }
-
-  if (stock.evidenceMatchErrors?.length > 0) {
-    return {
-      decision: 'MISMATCHED_EVIDENCE',
-      severity: 'HIGH',
-      reasons: stock.evidenceMatchErrors,
-    }
+  if ((stock.evidenceErrors || []).length > 0) {
+    return { decision: 'WEAK_EVIDENCE', severity: 'HIGH', reasons: stock.evidenceErrors }
   }
-
-  const staleReasons = getStaleDataReasons(stock)
-  if (staleReasons.length > 0) {
-    return {
-      decision: 'STALE_DATA',
-      severity: 'HIGH',
-      reasons: staleReasons,
-    }
+  if ((stock.multipleEvidenceValueErrors || []).length > 0) {
+    return { decision: 'MULTIPLE_EVIDENCE_VALUES', severity: 'HIGH', reasons: stock.multipleEvidenceValueErrors }
   }
-
-  const missing = getMissingRequiredData(stock)
-  if (missing.length > 0) {
-    return {
-      decision: 'NO_DATA',
-      severity: 'HIGH',
-      reasons: missing.map((item) => `${item}が未入力`),
-    }
+  if ((stock.evidenceMatchErrors || []).length > 0) {
+    return { decision: 'MISMATCHED_EVIDENCE', severity: 'HIGH', reasons: stock.evidenceMatchErrors }
   }
+  return null
+}
 
+const isStrictEvidenceRequired = (stock, coreDecision) => {
+  if (executionDecisionSet.has(coreDecision?.decision)) return true
+  if ((stock.riskPriorityScore || 0) >= 80) return true
+  if ((stock.positionWeight || 0) >= 8) return true
+  if ((stock.sectorWeight || 0) >= 25) return true
+  if ((stock.unrealizedGainRate || 0) <= -20) return true
+  return false
+}
+
+const buildLowConfidenceDecision = (stock, coreDecision) => ({
+  decision: 'LOW_CONFIDENCE',
+  severity: 'LOW',
+  reasons: [
+    '低リスクまたは実行対象外のため、証跡不備で通常判定を完全停止しない',
+    `参考判定: ${coreDecision?.decision || 'UNKNOWN'}`,
+    ...getEvidenceIssueReasons(stock).slice(0, 5),
+  ],
+})
+
+const getCoreTradingDecision = (stock) => {
   const profile = stock.ruleProfile || 'GENERAL'
-  const profileDataReasons = getProfileDataRequiredReasons(stock)
-  if (profileDataReasons.length > 0) {
-    return { decision: 'PROFILE_DATA_REQUIRED', severity: 'HIGH', reasons: [`判定プロファイル: ${profile}`, ...profileDataReasons] }
-  }
-
   const sellReasons = getSellReasonsByProfile(stock)
 
   if (sellReasons.length > 0) {
@@ -2178,6 +2160,53 @@ const judgeStock = (stock) => {
     severity: 'MEDIUM',
     reasons: [`判定プロファイル: ${profile}`, '売却・削減条件には該当しないが、買い条件をすべて満たしていない', ...failedBuyChecks.slice(0, 3)],
   }
+}
+
+const judgeStock = (stock) => {
+  if (stock.validationErrors?.length > 0) {
+    return {
+      decision: 'INVALID_DATA',
+      severity: 'CRITICAL',
+      reasons: stock.validationErrors,
+    }
+  }
+
+  const staleReasons = getStaleDataReasons(stock)
+  if (staleReasons.length > 0) {
+    return {
+      decision: 'STALE_DATA',
+      severity: 'HIGH',
+      reasons: staleReasons,
+    }
+  }
+
+  const missing = getMissingRequiredData(stock)
+  if (missing.length > 0) {
+    return {
+      decision: 'NO_DATA',
+      severity: 'HIGH',
+      reasons: missing.map((item) => `${item}が未入力`),
+    }
+  }
+
+  const profile = stock.ruleProfile || 'GENERAL'
+  const profileDataReasons = getProfileDataRequiredReasons(stock)
+  if (profileDataReasons.length > 0) {
+    return { decision: 'PROFILE_DATA_REQUIRED', severity: 'HIGH', reasons: [`判定プロファイル: ${profile}`, ...profileDataReasons] }
+  }
+
+  const coreDecision = getCoreTradingDecision(stock)
+  const hasEvidenceIssues = getEvidenceIssueReasons(stock).length > 0
+
+  if (hasEvidenceIssues) {
+    if (isStrictEvidenceRequired(stock, coreDecision)) {
+      const strictDecision = getStrictEvidenceDecision(stock, coreDecision)
+      if (strictDecision) return strictDecision
+    }
+    return buildLowConfidenceDecision(stock, coreDecision)
+  }
+
+  return coreDecision
 }
 
 function FilterButton({ label, active, onClick, activeClass = 'bg-slate-900 text-white border-slate-900' }) {
@@ -6278,7 +6307,7 @@ export default function PortfolioManagementDashboard() {
                 </div>
               </div>
               <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm font-semibold text-slate-700">
-                入力できるのは数値・事実のみ。判定優先順位は INVALID_DATA → UNVERIFIED_DATA → WEAK_EVIDENCE → MULTIPLE_EVIDENCE_VALUES → MISMATCHED_EVIDENCE → PROFILE_DATA_REQUIRED → STALE_DATA → NO_DATA → SELL → REDUCE → BUY → HOLD → WATCH。SELL/REDUCE/BUYは判定プロファイル別に分岐し、人間による上書きは不可。
+                入力できるのは数値・事実のみ。判定優先順位は INVALID_DATA → STALE_DATA → NO_DATA → PROFILE_DATA_REQUIRED → 重要銘柄のみUNVERIFIED/WEAK/MULTIPLE/MISMATCH → SELL → REDUCE → BUY → HOLD → WATCH。低リスク銘柄の証跡不備は LOW_CONFIDENCE に緩和し、人間による上書きは不可。
               </div>
             </div>
 
